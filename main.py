@@ -30,28 +30,27 @@ textract_client = boto3.client(
 )
 
 
-# --- Función para validar RUT ---
+# --- Funciones de Utilidad ---
 def find_rut_in_text(text):
-    """
-    Busca un patrón de RUT chileno en un texto.
-    Ej: 12.345.678-9, 12345678-9, 12.345.678-K
-    """
-    # Expresión regular para encontrar el RUT
-    # Soporta formatos con y sin puntos, con guión y con dígito verificador (número o K)
+    """Busca un patrón de RUT chileno en un texto."""
     rut_pattern = r'\b(\d{1,2}(?:\.?\d{3}){2}-[\dkK])\b'
     match = re.search(rut_pattern, text)
     if match:
         return match.group(1)
     return None
 
+def normalize_rut(rut_string):
+    """Elimina puntos y convierte a mayúsculas para una comparación consistente."""
+    if not rut_string:
+        return ""
+    return rut_string.replace(".", "").upper()
+
 # --- Rutas de la Aplicación ---
 
 @app.route("/")
 def index():
     if 'username' in session:
-        # Si el usuario está en sesión, muestra la encuesta
         return render_template('form.html')
-    # Si no, redirige al login
     return redirect(url_for('login'))
 
 @app.route("/login", methods=['GET', 'POST'])
@@ -69,7 +68,6 @@ def login():
                     'PASSWORD': password
                 }
             )
-            # Si la autenticación es exitosa, guardamos el usuario en la sesión
             session['username'] = username
             session['access_token'] = response['AuthenticationResult']['AccessToken']
             flash("Inicio de sesión exitoso!", "success")
@@ -83,7 +81,7 @@ def login():
 
 @app.route("/logout")
 def logout():
-    session.clear() # Limpia la sesión
+    session.clear()
     flash("Has cerrado sesión.", "info")
     return redirect(url_for('login'))
 
@@ -93,50 +91,50 @@ def upload_file():
         flash("Por favor, inicia sesión para continuar.", "warning")
         return redirect(url_for('login'))
 
-    if 'file' not in request.files:
-        flash("No se encontró el archivo en la solicitud.", "danger")
-        return redirect(request.url)
-
-    file = request.files['file']
-    if file.filename == '':
-        flash("No se seleccionó ningún archivo.", "warning")
-        return redirect(request.url)
-
-    if file:
-        # Leer los bytes de la imagen para enviarlos a Textract
-        image_bytes = file.read()
-        
-        try:
-            # Llamar a la API de Textract
-            response = textract_client.detect_document_text(
-                Document={'Bytes': image_bytes}
-            )
-            
-            # Unir todo el texto detectado en una sola cadena
-            detected_text = ""
-            for item in response["Blocks"]:
-                if item["BlockType"] == "LINE":
-                    detected_text += item["Text"] + " "
-            
-            # Buscar el RUT en el texto extraído
-            rut_encontrado = find_rut_in_text(detected_text)
-            
-            if rut_encontrado:
-                flash(f"RUT encontrado en la imagen: {rut_encontrado}", "success")
-                # Aquí podrías añadir la lógica para comparar con el RUT del usuario
-                # Por ahora, solo lo mostramos.
-            else:
-                flash("No se pudo encontrar un RUT en la imagen.", "danger")
-                # Para depuración, podríamos mostrar el texto detectado:
-                # flash(f"Texto detectado: {detected_text}", "info")
-
-        except Exception as e:
-            flash(f"Error al procesar la imagen con Amazon Textract: {e}", "danger")
-
+    if 'file' not in request.files or file.filename == '':
+        flash("No se seleccionó ningún archivo válido.", "warning")
         return redirect(url_for('index'))
 
-    return redirect(url_for('index'))
+    file = request.files['file']
+    image_bytes = file.read()
+    
+    try:
+        # 1. Extraer texto con Textract
+        response = textract_client.detect_document_text(Document={'Bytes': image_bytes})
+        detected_text = " ".join([item["Text"] for item in response["Blocks"] if item["BlockType"] == "LINE"])
+        
+        # 2. Buscar RUT en el texto extraído
+        rut_encontrado = find_rut_in_text(detected_text)
+        
+        if rut_encontrado:
+            # 3. Si se encuentra un RUT, obtener datos del usuario de Cognito
+            user_response = cognito_client.get_user(AccessToken=session['access_token'])
+            rut_del_perfil = None
+            # Corregido: Usar el nombre de atributo exacto 'custom:Rut'
+            for attribute in user_response['UserAttributes']:
+                if attribute['Name'] == 'custom:Rut':
+                    rut_del_perfil = attribute['Value']
+                    break
+            
+            if not rut_del_perfil:
+                flash("No se encontró el atributo 'RUT' en tu perfil de usuario de Cognito.", "danger")
+                return redirect(url_for('index'))
 
+            # 4. Normalizar y comparar los RUTs
+            rut_normalizado_imagen = normalize_rut(rut_encontrado)
+            rut_normalizado_perfil = normalize_rut(rut_del_perfil)
+
+            if rut_normalizado_imagen == rut_normalizado_perfil:
+                flash(f"¡Validación exitosa! El RUT de la imagen ({rut_encontrado}) coincide con tu perfil.", "success")
+            else:
+                flash(f"Error de validación: El RUT de la imagen ({rut_encontrado}) no coincide con el de tu perfil ({rut_del_perfil}).", "danger")
+        else:
+            flash("No se pudo encontrar un RUT con formato válido en la imagen.", "danger")
+
+    except Exception as e:
+        flash(f"Ocurrió un error inesperado durante la validación: {e}", "danger")
+
+    return redirect(url_for('index'))
 
 def main():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
