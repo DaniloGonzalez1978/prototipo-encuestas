@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Encuesta y Carga de RUT</title>
+</head>
+<body>
+    <h1>Sube la imagen de tu carnet de identidad</h1>
+
+    {# Bloque para mostrar los mensajes de Flask (flash) #}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <ul class=flashes>
+            {% for category, message in messages %}
+                <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <p>
+            <label for="file">Selecciona la imagen de tu RUT:</label>
+            <input type="file" id="file" name="file" accept="image/*" required>
+        </p>
+        <button type="submit">Subir y Validar RUT</button>
+    </form>
+
+    <hr>
+    <p><a href="/logout">Cerrar Sesión</a></p>
+
+</body>
+</html>

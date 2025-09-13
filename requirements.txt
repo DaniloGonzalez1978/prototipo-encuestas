@@ -4,3 +4,7 @@ autopep8
 
 # App
 flask
+boto3
+python-dotenv
+Pillow
+pytesseract
