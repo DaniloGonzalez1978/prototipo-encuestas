@@ -1,10 +1,8 @@
-# Dev environment
-pip
-autopep8
-
-# App
-flask
 boto3
+flask
 python-dotenv
+requests
 Pillow
+opencv-python-headless
 pytesseract
+numpy

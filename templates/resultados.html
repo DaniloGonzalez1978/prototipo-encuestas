@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Resultados de la Votación</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; background-color: #f4f4f9; color: #333; }
+        h1, h2 { color: #0056b3; }
+        table { width: 100%; border-collapse: collapse; margin-top: 2em; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; border: 1px solid #ddd; text-align: left; }
+        thead { background-color: #0056b3; color: white; }
+        tbody tr:nth-child(even) { background-color: #f9f9f9; }
+        tbody tr:hover { background-color: #f1f1f1; }
+        .summary { display: flex; justify-content: space-around; background-color: white; padding: 1.5em; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .summary-item { text-align: center; }
+        .summary-item h3 { margin: 0 0 10px 0; color: #555; }
+        .summary-item p { font-size: 2em; margin: 0; font-weight: bold; color: #0056b3; }
+        .si { color: green; font-weight: bold; }
+        .no { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Resultados de la Votación del Reglamento</h1>
+
+    <h2>Resumen General</h2>
+    <div class="summary">
+        <div class="summary-item">
+            <h3>Total Votos Emitidos</h3>
+            <p>{{ stats.total_votos }}</p>
+        </div>
+        <div class="summary-item">
+            <h3>Votos "SI"</h3>
+            <p class="si">{{ stats.votos_si }}</p>
+        </div>
+        <div class="summary-item">
+            <h3>Votos "NO"</h3>
+            <p class="no">{{ stats.votos_no }}</p>
+        </div>
+    </div>
+
+    <h2>Detalle de Votos</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Unidad</th>
+                <th>RUT Votante</th>
+                <th>Nombre</th>
+                <th>Voto</th>
+                <th>Fecha Voto</th>
+                <th>IP</th>
+                <th>Fecha Primer Login</th>
+                <th>Nº Logins</th>
+                <th>Fecha Primer Intento</th>
+                <th>Nº Intentos</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for voto in votos %}
+            <tr>
+                <td>{{ voto.Unidad }}</td>
+                <td>{{ voto.RUT }}</td>
+                <td>{{ voto.Nombre }}</td>
+                <td><span class="{{ 'si' if voto.AceptaReglamento == 'SI' else 'no' }}">{{ voto.AceptaReglamento }}</span></td>
+                <td>{{ voto.FechaVoto }}</td>
+                <td>{{ voto.IPAddress }}</td>
+                <td>{{ voto.FechaPrimerLogin or 'N/A' }}</td>
+                <td>{{ voto.LoginCount or 'N/A' }}</td>
+                <td>{{ voto.FechaPrimerIntentoValidacion or 'N/A' }}</td>
+                <td>{{ voto.IntentosValidacionCount or 'N/A' }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="10" style="text-align:center;">Aún no se han registrado votos.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>

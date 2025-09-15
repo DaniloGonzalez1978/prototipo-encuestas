@@ -2,32 +2,168 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Encuesta y Carga de RUT</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proceso de Votación</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        body { background-color: #f8f9fa; }
+        .card { margin-top: 2rem; }
+        .step-container { display: none; }
+        .step-container.active { display: block; }
+        .card-header h1 { font-size: 1.8rem; color: #343a40; }
+        .card-title { color: #0056b3; }
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            display: none;
+            margin: 20px auto;
+        }
+        .file-input-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem; /* Espacio entre los campos de subida */
+        }
+        .img-preview {
+            max-width: 150px; 
+            max-height: 100px; 
+            border: 1px solid #ddd; 
+            border-radius: 4px; 
+            padding: 5px; 
+            display: none; /* Oculto por defecto */
+            margin-left: 1rem;
+        }
+        .img-preview.loaded {
+            border-color: #28a745; /* Verde Bootstrap 'success' */
+            border-width: 2px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
 </head>
 <body>
-    <h1>Sube la imagen de tu carnet de identidad</h1>
+    <div class="container">
 
-    {# Bloque para mostrar los mensajes de Flask (flash) #}
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <ul class=flashes>
-            {% for category, message in messages %}
-                <li class="{{ category }}">{{ message }}</li>
-            {% endfor %}
-            </ul>
-        {% endif %}
-    {% endwith %}
+        <!-- Paso 1: Verificación de Datos -->
+        <div id="step1" class="step-container active">
+            <div class="card shadow-sm">
+                <div class="card-header text-center bg-white">
+                    <h1>{{ user.get('custom:Comunidad', 'Comunidad no Disponible') }}</h1>
+                </div>
+                <div class="card-body">
+                    <h5 class="card-title">Datos del Usuario</h5>
+                    <ul class="list-group list-group-flush">
+                        <li class="list-group-item"><strong>Nombre:</strong> {{ user.get('custom:Nombre', 'No disponible') }}</li>
+                        <li class="list-group-item"><strong>RUT:</strong> {{ user.get('custom:Rut', 'No disponible') }}</li>
+                        <li class="list-group-item"><strong>Unidades Asociadas:</strong>
+                            {% set tipo_unidad = user.get('custom:TipoUnidad', '') %}
+                            {% set unidades = user.get('custom:Unidad', '').split(',') %}
+                            {% set unidades_formateadas = [] %}
+                            {% for unit in unidades %}
+                                {% if unit.strip() %}
+                                    {%- do unidades_formateadas.append(tipo_unidad + ' ' + unit.strip()) -%}
+                                {% endif %}
+                            {% endfor %}
+                            {{ unidades_formateadas | join(', ') }}
+                        </li>
+                    </ul>
+                    <hr class="my-4">
+                    <h5 class="card-title">Estado de sus Unidades</h5>
+                    <ul class="list-group">
+                        {% for unit in user.get('custom:Unidad', '').split(',') %}
+                            <li class="list-group-item">⌛ {{ user.get('custom:TipoUnidad', '') }} {{ unit.strip() }} - Pendiente de Votación</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div class="card-footer">
+                    <div class="d-flex flex-column flex-sm-row justify-content-between">
+                        <a href="{{ url_for('signout') }}" class="btn btn-outline-secondary mb-2 mb-sm-0">Cerrar Sesión</a>
+                        <button id="continue-step1" class="btn btn-primary">Continuar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
-    <form action="/upload" method="post" enctype="multipart/form-data">
-        <p>
-            <label for="file">Selecciona la imagen de tu RUT:</label>
-            <input type="file" id="file" name="file" accept="image/*" required>
-        </p>
-        <button type="submit">Subir y Validar RUT</button>
-    </form>
+        <!-- Paso 2: Validación de Cédula -->
+        <div id="step2" class="step-container">
+            <div class="card shadow-sm">
+                <div class="card-header text-center bg-white">
+                    <h1>{{ user.get('custom:Comunidad', 'Comunidad no Disponible') }}</h1>
+                </div>
+                <div class="card-body">
+                    <h5 class="card-title">Paso 2: Validación de Cédula de Identidad</h5>
+                    <p>Para continuar, necesitamos verificar tu identidad. Por favor, sube una foto de tu cédula donde se vea claramente el RUT: <strong>{{ user.get('custom:Rut', 'No disponible') }}</strong></p>
+                    
+                    <div class="form-group file-input-container">
+                        <div>
+                            <label for="file-upload-front">Cédula de Identidad (Parte Frontal):</label>
+                            <input type="file" class="form-control-file" id="file-upload-front" accept="image/*" required>
+                        </div>
+                        <img id="preview-front" class="img-preview" src="#" alt="Vista previa frontal" />
+                    </div>
+                    
+                    <div class="form-group file-input-container">
+                        <div>
+                            <label for="file-upload-back">Cédula de Identidad (Parte Trasera):</label>
+                            <input type="file" class="form-control-file" id="file-upload-back" accept="image/*" required>
+                        </div>
+                         <img id="preview-back" class="img-preview" src="#" alt="Vista previa trasera" />
+                    </div>
 
-    <hr>
-    <p><a href="/logout">Cerrar Sesión</a></p>
+                    <button id="validate-rut-btn" class="btn btn-info my-3" disabled>Validar RUT</button>
+                    
+                    <div id="loader" class="loader"></div>
+                    <div id="validation-result" class="mt-3"></div>
+                </div>
+                <div class="card-footer">
+                     <div class="d-flex flex-column flex-sm-row justify-content-between">
+                        <button id="prev-step2" class="btn btn-outline-secondary mb-2 mb-sm-0">Anterior</button>
+                        <button id="next-step2" class="btn btn-primary" disabled>Siguiente</button>
+                    </div>
+                </div>
+            </div>
+        </div>
 
+        <!-- Paso 3: Pregunta Final -->
+        <div id="step3" class="step-container">
+            <div class="card shadow-sm">
+                 <div class="card-header text-center bg-white">
+                    <h1>{{ user.get('custom:Comunidad', 'Comunidad no Disponible') }}</h1>
+                </div>
+                <div class="card-body">
+                    <h5 class="card-title">Paso 3: Votación</h5>
+                    <p>Has verificado tu identidad correctamente. Por favor, responde la siguiente pregunta para finalizar.</p>
+                    <div class="form-group">
+                        <label for="final-answer"><strong>¿Estás de acuerdo con el nuevo REGLAMENTO DE COPROPIEDAD?</strong></label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="final-answer" id="final-answer-si" value="si" checked>
+                            <label class="form-check-label" for="final-answer-si">Sí</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="final-answer" id="final-answer-no" value="no">
+                            <label class="form-check-label" for="final-answer-no">No</label>
+                        </div>
+                    </div>
+                    <div id="final-loader" class="loader"></div>
+                    <div id="final-result" class="mt-3"></div>
+                </div>
+                <div class="card-footer">
+                    <div class="d-flex flex-column flex-sm-row justify-content-between">
+                        <button id="prev-step3" class="btn btn-outline-secondary mb-2 mb-sm-0">Anterior</button>
+                        <button id="save-data" class="btn btn-success">Guardar y Finalizar Votación</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="{{ url_for('static', filename='js/form.js') }}"></script>
 </body>
 </html>

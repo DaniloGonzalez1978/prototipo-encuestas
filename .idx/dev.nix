@@ -1,29 +1,42 @@
-# To learn more about how to use Nix to configure your environment
-# see: https://developers.google.com/idx/guides/customize-idx-env
 { pkgs, ... }: {
-  # Which nixpkgs channel to use.
-  channel = "stable-24.05"; # or "unstable"
-  # Use https://search.nixos.org/packages to find packages
-  packages = [ pkgs.python3 ];
+  channel = "stable-24.05";
+  packages = [
+    pkgs.python3
+    pkgs.tesseract5
+    # pkgs.tessdata_best  # Comentado temporalmente para arreglar la compilación
+    pkgs.pkg-config
+    pkgs.gcc
+    pkgs.stdenv.cc.cc.lib
+    pkgs.libGL
+    pkgs.zlib
+    pkgs.gcc-unwrapped.lib
+  ];
+  env = {
+    LD_LIBRARY_PATH = pkgs.lib.mkForce "${pkgs.stdenv.cc.cc.lib}/lib";
+  };
   idx = {
-    # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [ "ms-python.python" ];
     workspace = {
-      # Runs when a workspace is first created with this `dev.nix` file
-      onCreate = {
-        install =
-          "python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt";
-        # Open editors for the following files by default, if they exist:
-        default.openFiles = [ "README.md" "src/index.html" "main.py" ];
-      }; # To run something each time the workspace is (re)started, use the `onStart` hook
+      onStart = {
+        install-deps = ''
+          if [ ! -d ".venv" ]; then
+            echo "Creating virtual environment in ./.venv..."
+            python -m venv .venv
+          fi
+          echo "Installing dependencies from requirements.txt..."
+          source .venv/bin/activate
+          pip install --no-cache-dir --force-reinstall -r requirements.txt
+        '';
+        open-readme = {
+          openFiles = [ "README.md" "main.py" ];
+        };
+      };
     };
-    # Enable previews and customize configuration
     previews = {
       enable = true;
       previews = {
         web = {
-          command = [ "./devserver.sh" ];
-          env = { PORT = "$PORT"; };
+          command = ["./devserver.sh"];
           manager = "web";
         };
       };
