@@ -5,6 +5,7 @@ import boto3
 import json
 import requests
 import base64
+import logging
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
 from dotenv import load_dotenv
 from datetime import datetime
@@ -17,17 +18,13 @@ import pytesseract
 from PIL import Image
 import numpy as np
 
+# --- Configuración del Logging ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 load_dotenv()
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.jinja_env.add_extension('jinja2.ext.do')
-app.secret_key = os.urandom(24)
-
-# --- Configuraciones ---
-UPLOAD_FOLDER = 'static/uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
 
 # --- Función para obtener y limpiar variables de entorno ---
 def get_env_variable(var_name, default=None):
@@ -35,6 +32,17 @@ def get_env_variable(var_name, default=None):
     if isinstance(value, str):
         return value.strip()
     return value
+
+# --- Clave Secreta ---
+app.secret_key = get_env_variable('SECRET_KEY')
+if not app.secret_key:
+    raise ValueError("No se ha configurado la SECRET_KEY en las variables de entorno.")
+
+# --- Configuraciones ---
+UPLOAD_FOLDER = 'static/uploads'
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 # --- Clientes de Servicios AWS ---
 dynamodb_client = boto3.client(
@@ -50,8 +58,6 @@ CLIENT_SECRET = get_env_variable('COGNITO_CLIENT_SECRET')
 COGNITO_DOMAIN = get_env_variable('COGNITO_DOMAIN')
 REDIRECT_URI = get_env_variable('COGNITO_REDIRECT_URI')
 TABLE_NAME = get_env_variable('DYNAMODB_TABLE_NAME', 'user_participations')
-APP_BASE_URL = get_env_variable('APP_BASE_URL')
-
 
 # --- MIDDLEWARE ANTI-CACHÉ ---
 @app.after_request
@@ -70,6 +76,84 @@ def get_user_from_session():
         payload_b64 += '=' * (-len(payload_b64) % 4)
         return json.loads(base64.urlsafe_b64decode(payload_b64))
     except Exception: return None
+
+def normalize_rut(rut):
+    if not rut:
+        return ""
+    return re.sub(r'[^0-9kK]', '', str(rut)).upper()
+
+def extract_rut_from_image(image_path):
+    try:
+        logging.info(f"Iniciando extracción de RUT desde: {image_path}")
+        original_image = cv2.imread(image_path)
+
+        target_height = 1200
+        scale_ratio = target_height / original_image.shape[0]
+        width = int(original_image.shape[1] * scale_ratio)
+        height = int(original_image.shape[0] * scale_ratio)
+        resized_image = cv2.resize(original_image, (width, height), interpolation=cv2.INTER_LANCZOS4)
+
+        for angle in [0, 90, 180, 270]:
+            logging.info(f"Probando con rotación de {angle} grados...")
+            
+            if angle == 90:
+                rotated_image = cv2.rotate(resized_image, cv2.ROTATE_90_CLOCKWISE)
+            elif angle == 180:
+                rotated_image = cv2.rotate(resized_image, cv2.ROTATE_180)
+            elif angle == 270:
+                rotated_image = cv2.rotate(resized_image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            else:
+                rotated_image = resized_image
+
+            gray_image = cv2.cvtColor(rotated_image, cv2.COLOR_BGR2GRAY)
+            denoised_image = cv2.medianBlur(gray_image, 3)
+            thresh_image = cv2.adaptiveThreshold(denoised_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 4)
+
+            custom_config = r'--oem 3 --psm 11'
+            text = pytesseract.image_to_string(thresh_image, config=custom_config, lang='spa')
+            logging.info(f"Texto extraído (rotación {angle}°): \"{text[:200].replace('\n', ' ')}...\"")
+
+            anchor_match = re.search(r'R[Uu][Nn]|RUT|C[eé]dula|C[Ii]v[Ii][Ll]', text, re.IGNORECASE)
+            text_to_search = text
+
+            if anchor_match:
+                logging.info(f"Ancla encontrada ('{anchor_match.group(0)}'). Buscando RUT cerca.")
+                text_to_search = text[anchor_match.start():anchor_match.start() + 200]
+
+            rut_pattern = r'(\d{1,2}[-., ]?\d{3}[-., ]?\d{3}[-., ]?[dkK\d])'
+            matches = re.findall(rut_pattern, text_to_search)
+
+            if matches:
+                for potential_rut in matches:
+                    normalized = normalize_rut(potential_rut)
+                    if 8 <= len(normalized) <= 9:
+                        logging.info(f"RUT válido encontrado: '{normalized}' (extraído de '{potential_rut}')")
+                        return normalized
+
+        logging.warning("No se encontró un RUT procesable en ninguna orientación.")
+        return None
+
+    except Exception as e:
+        logging.error(f"Error catastrófico durante el pipeline de OCR: {e}", exc_info=True)
+        return None
+
+def save_and_get_url(file, user_sub):
+    if not file or not file.filename:
+        logging.warning("Llamada a save_and_get_url sin archivo.")
+        return None, "No se proporcionó ningún archivo o el archivo no tiene nombre"
+    
+    filename = secure_filename(f"{user_sub}_{datetime.utcnow().timestamp()}_{file.filename}")
+    path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    logging.info(f"Intentando guardar el archivo en: {path}")
+    
+    try:
+        file.save(path)
+        url = url_for('static', filename=f'uploads/{filename}')
+        logging.info(f"Archivo guardado con éxito. URL: {url}, Path: {path}")
+        return url, path
+    except Exception as e:
+        logging.error(f"Error al guardar el archivo en '{path}': {e}", exc_info=True)
+        return None, f"Error interno al intentar guardar el archivo."
 
 def get_pending_units(user_attributes):
     if not user_attributes or 'sub' not in user_attributes:
@@ -138,6 +222,7 @@ def callback():
         error_description = request.args.get('error_description')
         if error:
             flash(f"Error de Cognito: {error} - {error_description}", "danger")
+        # Si no hay código (posiblemente de un logout), simplemente redirigir al inicio.
         return redirect(url_for('index'))
 
     token_url = f"https://{COGNITO_DOMAIN}/oauth2/token"
@@ -173,7 +258,8 @@ def callback():
 @app.route('/logout')
 def logout():
     session.clear()
-    logout_uri = APP_BASE_URL
+    # CORRECCIÓN: Usar la URL de callback como el destino después del logout, según lo solicitado.
+    logout_uri = url_for('callback', _external=True)
     cognito_logout_url = f"https://{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri={logout_uri}"
     return redirect(cognito_logout_url)
 
@@ -190,6 +276,61 @@ def form():
 
     return render_template('form.html', user=user, pending_units=pending_units)
 
+@app.route('/validate_rut', methods=['POST'])
+def validate_rut():
+    try:
+        logging.info("Iniciando /validate_rut.")
+        user = get_user_from_session()
+        if not user:
+            logging.warning("Acceso no autorizado a /validate_rut (sin sesión).")
+            return jsonify({'error': 'No autorizado'}), 401
+
+        user_sub = user.get('sub')
+        logging.info(f"Petición de validación para el usuario: {user_sub}")
+
+        if 'id_frontal' not in request.files:
+            logging.error("Petición a /validate_rut no contiene 'id_frontal' en request.files.")
+            return jsonify({'error': 'Falta la imagen frontal del carnet (campo id_frontal).'}), 400
+
+        img_frontal_file = request.files['id_frontal']
+        img_trasera_file = request.files.get('id_trasera')
+        logging.info(f"Archivo frontal recibido: '{img_frontal_file.filename}', Trasera: '{img_trasera_file.filename if img_trasera_file else 'N/A'}'")
+
+        user_rut_cognito = normalize_rut(user.get('custom:Rut'))
+        logging.info(f"RUT del usuario en Cognito: {user_rut_cognito}")
+
+        url_frontal, result_frontal = save_and_get_url(img_frontal_file, user_sub)
+        if not url_frontal:
+            logging.error(f"Falló el guardado de la imagen frontal. Motivo: {result_frontal}")
+            return jsonify({'error': result_frontal}), 500
+        path_frontal = result_frontal
+
+        url_trasera, _ = save_and_get_url(img_trasera_file, user_sub)
+
+        extracted_rut = extract_rut_from_image(path_frontal)
+        
+        rut_match_success = bool(extracted_rut and extracted_rut == user_rut_cognito)
+        logging.info(f"Resultado de la comparación de RUT: {rut_match_success} (Extraído: {extracted_rut}, Cognito: {user_rut_cognito})")
+
+        session['validation_data'] = {
+            'rut_match_success': rut_match_success,
+            'rut_detectado_imagen': extracted_rut or 'No detectado',
+            'url_img_frontal': url_frontal,
+            'url_img_trasera': url_trasera or 'N/A'
+        }
+        session.modified = True
+        logging.info(f"Datos de validación guardados en la sesión: {session['validation_data']}")
+        
+        return jsonify({
+            'success': True,
+            'rut_match': rut_match_success,
+            'extracted_rut': extracted_rut or 'No se pudo extraer el RUT.',
+            'user_rut': user_rut_cognito
+        })
+    except Exception as e:
+        logging.error(f"Error no controlado en /validate_rut: {e}", exc_info=True)
+        return jsonify({'error': 'Ocurrió un error inesperado en el servidor.'}), 500
+
 @app.route('/save_data', methods=['POST'])
 def save_data():
     user = get_user_from_session()
@@ -200,6 +341,7 @@ def save_data():
         return jsonify({'success': True, 'message': 'Tu voto ya ha sido registrado para todas las unidades.'})
 
     data = request.json
+    validation_data = session.pop('validation_data', {})
     try:
         transaction_items = []
         for unit_data in pending_units:
@@ -212,7 +354,11 @@ def save_data():
                 'rut': {'S': user.get('custom:Rut', 'N/A')},
                 'email': {'S': user.get('email', 'N/A')},
                 'comunidad': {'S': user.get('custom:Comunidad', 'N/A')},
-                'decision_reglamento': {'S': data.get('final_answer', 'N/A')}
+                'decision_reglamento': {'S': data.get('final_answer', 'N/A')},
+                'rut_match_success': {'BOOL': validation_data.get('rut_match_success', False)},
+                'rut_detectado_imagen': {'S': validation_data.get('rut_detectado_imagen', 'N/A')},
+                'url_img_frontal': {'S': validation_data.get('url_img_frontal', 'N/A')},
+                'url_img_trasera': {'S': validation_data.get('url_img_trasera', 'N/A')}
             }
             transaction_items.append({
                 'Put': {
@@ -231,8 +377,10 @@ def save_data():
         if 'TransactionCanceledException' in str(e):
             return jsonify({'success': True, 'message': 'Tu voto ya ha sido registrado.'})
         else:
+            logging.error(f"Error de AWS al guardar: {e}", exc_info=True)
             return jsonify({'error': f'Error de base de datos: {e.response["Error"]["Message"]}'}), 500
     except Exception as e:
+        logging.error(f"Error inesperado al guardar: {e}", exc_info=True)
         return jsonify({'error': f'Ha ocurrido un error inesperado: {str(e)}'}), 500
 
 if __name__ == '__main__':
