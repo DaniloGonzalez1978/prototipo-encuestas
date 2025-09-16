@@ -157,7 +157,7 @@ def save_and_get_url(file, user_sub):
 
 def get_pending_units(user_attributes):
     if not user_attributes or 'sub' not in user_attributes:
-        return []
+        return [], [] # Devuelve (pendientes, totales)
 
     cognito_units_str = user_attributes.get('custom:Unidad', '')
     cognito_types_str = user_attributes.get('custom:TipoUnidad', '')
@@ -167,12 +167,12 @@ def get_pending_units(user_attributes):
 
     if len(unit_numbers) != len(unit_types):
         print("Error: La cantidad de unidades y tipos de unidad no coincide.")
-        return []
+        return [], []
 
     all_units_structured = [{'tipo_unidad': type, 'unidad': num} for type, num in zip(unit_types, unit_numbers)]
     
     if not all_units_structured:
-        return []
+        return [], []
 
     voted_units = set()
     try:
@@ -189,22 +189,31 @@ def get_pending_units(user_attributes):
                     voted_units.add(item['unidad']['S'])
     except ClientError as e:
         print(f"Error de DynamoDB al obtener unidades votadas: {e}")
-        return []
+        return [], all_units_structured # En caso de error, es mejor asumir que no ha votado
 
     pending_structured = [u for u in all_units_structured if u['unidad'] not in voted_units]
     pending_structured.sort(key=lambda x: (x['tipo_unidad'], x['unidad']))
-    return pending_structured
+    
+    return pending_structured, all_units_structured
 
 # --- Rutas de Flask ---
 @app.route('/')
 def index():
     user = get_user_from_session()
     if not user:
-        return render_template('index.html', user=None, user_has_voted=False)
+        return render_template('index.html', user=None, user_has_voted=False, has_no_units=False)
 
-    pending_units = get_pending_units(user)
+    pending_units, all_units = get_pending_units(user)
+
+    # Caso 1: El usuario no tiene NINGUNA unidad asignada en Cognito.
+    if not all_units:
+        return render_template('index.html', user=user, user_has_voted=False, has_no_units=True)
+
+    # Caso 2: El usuario tiene unidades, pero ya votó por todas.
     if not pending_units:
-        return render_template('index.html', user=user, user_has_voted=True)
+        return render_template('index.html', user=user, user_has_voted=True, has_no_units=False)
+    
+    # Caso 3: El usuario tiene unidades pendientes, debe ir al formulario.
     else:
         return redirect(url_for('form'))
 
@@ -222,7 +231,6 @@ def callback():
         error_description = request.args.get('error_description')
         if error:
             flash(f"Error de Cognito: {error} - {error_description}", "danger")
-        # Si no hay código (posiblemente de un logout), simplemente redirigir al inicio.
         return redirect(url_for('index'))
 
     token_url = f"https://{COGNITO_DOMAIN}/oauth2/token"
@@ -258,7 +266,6 @@ def callback():
 @app.route('/logout')
 def logout():
     session.clear()
-    # CORRECCIÓN: Usar la URL de callback como el destino después del logout, según lo solicitado.
     logout_uri = url_for('callback', _external=True)
     cognito_logout_url = f"https://{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri={logout_uri}"
     return redirect(cognito_logout_url)
@@ -269,8 +276,13 @@ def form():
     if not user:
         return redirect(url_for('login'))
 
-    pending_units = get_pending_units(user)
-    if not pending_units:
+    pending_units, all_units = get_pending_units(user)
+
+    if not all_units: # Si no tiene unidades, no debería estar aquí
+        flash("No tiene unidades asignadas para votar. Por favor, contacte al administrador.", "warning")
+        return redirect(url_for('index'))
+
+    if not pending_units: # Si ya votó por todo, tampoco debería estar aquí
         flash("Ya has completado tu votación para todas tus unidades.", "info")
         return redirect(url_for('index'))
 
@@ -336,7 +348,7 @@ def save_data():
     user = get_user_from_session()
     if not user: return jsonify({'error': 'No autorizado'}), 401
 
-    pending_units = get_pending_units(user)
+    pending_units, _ = get_pending_units(user) # Solo necesitamos las pendientes aquí
     if not pending_units:
         return jsonify({'success': True, 'message': 'Tu voto ya ha sido registrado para todas las unidades.'})
 
