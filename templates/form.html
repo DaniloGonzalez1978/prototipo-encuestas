@@ -4,87 +4,94 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Proceso de Votación</title>
-    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
     <style>
-        body { background-color: #f8f9fa; }
-        .card { margin-top: 2rem; }
+        body { 
+            background-color: #f8f9fa;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .container { max-width: 800px; }
+        .progress { border-radius: 0.5rem; }
+        .card { 
+            margin-top: 1.5rem; 
+            border: none;
+            border-radius: 0.5rem;
+        }
         .step-container { display: none; }
         .step-container.active { display: block; }
+
         .card-header h1 { font-size: 1.8rem; color: #343a40; }
         .card-title { color: #0056b3; }
-        .loader {
-            border: 5px solid #f3f3f3;
-            border-top: 5px solid #3498db;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            display: none;
-            margin: 20px auto;
-        }
-        .file-input-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem; /* Espacio entre los campos de subida */
-        }
-        .img-preview {
+        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #0d6efd; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; display: none; margin: 20px auto; }
+        .img-preview { 
             max-width: 150px; 
-            max-height: 100px; 
-            border: 1px solid #ddd; 
-            border-radius: 4px; 
-            padding: 5px; 
-            display: none; /* Oculto por defecto */
-            margin-left: 1rem;
+            height: 100px;
+            object-fit: cover;
+            border: 2px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 4px; 
+            display: none; 
         }
-        .img-preview.loaded {
-            border-color: #28a745; /* Verde Bootstrap 'success' */
-            border-width: 2px;
+        .img-preview.loaded { border-color: #198754; }
+
+        /* Estilos para alertas personalizadas */
+        .alert-custom {
+            display: flex;
+            align-items: center;
+            padding: 1rem;
+            font-size: 1.1rem;
         }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .alert-custom .bi {
+            font-size: 1.5rem;
+            margin-right: 0.75rem;
         }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="container py-4">
+
+        <!-- Barra de Progreso -->
+        <div class="progress" style="height: 25px;">
+            <div id="progress-bar" class="progress-bar fw-bold" role="progressbar" style="width: 33%;" aria-valuenow="33" aria-valuemin="0" aria-valuemax="100">Paso 1 de 3</div>
+        </div>
 
         <!-- Paso 1: Verificación de Datos -->
         <div id="step1" class="step-container active">
             <div class="card shadow-sm">
-                <div class="card-header text-center bg-white">
+                <div class="card-header text-center bg-white py-3">
                     <h1>{{ user.get('custom:Comunidad', 'Comunidad no Disponible') }}</h1>
                 </div>
-                <div class="card-body">
-                    <h5 class="card-title">Datos del Usuario</h5>
-                    <ul class="list-group list-group-flush">
-                        <li class="list-group-item"><strong>Nombre:</strong> {{ user.get('custom:Nombre', 'No disponible') }}</li>
-                        <li class="list-group-item"><strong>RUT:</strong> {{ user.get('custom:Rut', 'No disponible') }}</li>
-                        <li class="list-group-item"><strong>Unidades Asociadas:</strong>
-                            {% set tipo_unidad = user.get('custom:TipoUnidad', '') %}
-                            {% set unidades = user.get('custom:Unidad', '').split(',') %}
-                            {% set unidades_formateadas = [] %}
-                            {% for unit in unidades %}
-                                {% if unit.strip() %}
-                                    {%- do unidades_formateadas.append(tipo_unidad + ' ' + unit.strip()) -%}
-                                {% endif %}
-                            {% endfor %}
-                            {{ unidades_formateadas | join(', ') }}
+                <div class="card-body p-4">
+                    <h5 class="card-title">Verificación de Datos</h5>
+                    <ul class="list-group list-group-flush mt-3">
+                        <li class="list-group-item px-0"><strong>Nombre:</strong> {{ user.get('custom:Nombre', 'No disponible') }}</li>
+                        <li class="list-group-item px-0"><strong>RUT:</strong> {{ user.get('custom:Rut', 'No disponible') }}</li>
+                        <li class="list-group-item px-0"><strong>Unidad Principal:</strong> {{ user.get('custom:TipoUnidad', '').split(',')[0] }} {{ user.get('custom:Unidad', '').split(',')[0] }}</li>
+                        <li class="list-group-item px-0">
+                            <strong>Unidades Pendientes de Votación:</strong>
+                            {% if pending_units %}
+                                <ul class="list-group mt-2">
+                                    {% for unit in pending_units %}
+                                        <li class="list-group-item list-group-item-warning rounded-pill text-center fw-bold my-1">
+                                            <i class="bi bi-hourglass-split"></i> {{ unit.tipo_unidad }} {{ unit.unidad }}
+                                        </li>
+                                    {% endfor %}
+                                </ul>
+                            {% else %}
+                                <div id="alert-no-units"></div>
+                            {% endif %}
                         </li>
                     </ul>
-                    <hr class="my-4">
-                    <h5 class="card-title">Estado de sus Unidades</h5>
-                    <ul class="list-group">
-                        {% for unit in user.get('custom:Unidad', '').split(',') %}
-                            <li class="list-group-item">⌛ {{ user.get('custom:TipoUnidad', '') }} {{ unit.strip() }} - Pendiente de Votación</li>
-                        {% endfor %}
-                    </ul>
                 </div>
-                <div class="card-footer">
-                    <div class="d-flex flex-column flex-sm-row justify-content-between">
-                        <a href="{{ url_for('signout') }}" class="btn btn-outline-secondary mb-2 mb-sm-0">Cerrar Sesión</a>
-                        <button id="continue-step1" class="btn btn-primary">Continuar</button>
+                <div class="card-footer bg-white p-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary"><i class="bi bi-box-arrow-left"></i> Cerrar Sesión</a>
+                        <button id="continue-step1" class="btn btn-primary" {% if not pending_units %}disabled{% endif %}>Continuar <i class="bi bi-arrow-right"></i></button>
                     </div>
                 </div>
             </div>
@@ -93,38 +100,48 @@
         <!-- Paso 2: Validación de Cédula -->
         <div id="step2" class="step-container">
             <div class="card shadow-sm">
-                <div class="card-header text-center bg-white">
+                <div class="card-header text-center bg-white py-3">
                     <h1>{{ user.get('custom:Comunidad', 'Comunidad no Disponible') }}</h1>
                 </div>
-                <div class="card-body">
-                    <h5 class="card-title">Paso 2: Validación de Cédula de Identidad</h5>
-                    <p>Para continuar, necesitamos verificar tu identidad. Por favor, sube una foto de tu cédula donde se vea claramente el RUT: <strong>{{ user.get('custom:Rut', 'No disponible') }}</strong></p>
+                <div class="card-body p-4">
+                    <h5 class="card-title">Validación de Identidad</h5>
+                    <p class="mt-3">Suba o tome una foto de su cédula para verificar el RUT: <strong>{{ user.get('custom:Rut', 'No disponible') }}</strong></p>
                     
-                    <div class="form-group file-input-container">
-                        <div>
-                            <label for="file-upload-front">Cédula de Identidad (Parte Frontal):</label>
-                            <input type="file" class="form-control-file" id="file-upload-front" accept="image/*" required>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Cédula de Identidad (Frontal):</label>
+                        <div class="d-flex align-items-center">
+                            <div>
+                                <input type="file" id="file-upload-front" accept="image/*" style="display: none;">
+                                <input type="file" id="file-camera-front" accept="image/*" capture="environment" style="display: none;">
+                                <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-upload-front').click();"><i class="bi bi-upload"></i> Subir</button>
+                                <button type="button" class="btn btn-primary ms-2" onclick="document.getElementById('file-camera-front').click();"><i class="bi bi-camera-fill"></i> Tomar Foto</button>
+                            </div>
+                            <img id="preview-front" class="img-preview ms-3" src="#" alt="Vista previa frontal" />
                         </div>
-                        <img id="preview-front" class="img-preview" src="#" alt="Vista previa frontal" />
                     </div>
                     
-                    <div class="form-group file-input-container">
-                        <div>
-                            <label for="file-upload-back">Cédula de Identidad (Parte Trasera):</label>
-                            <input type="file" class="form-control-file" id="file-upload-back" accept="image/*" required>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Cédula de Identidad (Trasera):</label>
+                        <div class="d-flex align-items-center">
+                             <div>
+                                <input type="file" id="file-upload-back" accept="image/*" style="display: none;">
+                                <input type="file" id="file-camera-back" accept="image/*" capture="environment" style="display: none;">
+                                <button type="button" class="btn btn-secondary" onclick="document.getElementById('file-upload-back').click();"><i class="bi bi-upload"></i> Subir</o>
+                                <button type="button" class="btn btn-primary ms-2" onclick="document.getElementById('file-camera-back').click();"><i class="bi bi-camera-fill"></i> Tomar Foto</button>
+                            </div>
+                            <img id="preview-back" class="img-preview ms-3" src="#" alt="Vista previa trasera" />
                         </div>
-                         <img id="preview-back" class="img-preview" src="#" alt="Vista previa trasera" />
                     </div>
 
-                    <button id="validate-rut-btn" class="btn btn-info my-3" disabled>Validar RUT</button>
+                    <button id="validate-rut-btn" class="btn btn-info my-3" disabled><i class="bi bi-shield-check"></i> Validar RUT</button>
                     
                     <div id="loader" class="loader"></div>
                     <div id="validation-result" class="mt-3"></div>
                 </div>
-                <div class="card-footer">
-                     <div class="d-flex flex-column flex-sm-row justify-content-between">
-                        <button id="prev-step2" class="btn btn-outline-secondary mb-2 mb-sm-0">Anterior</button>
-                        <button id="next-step2" class="btn btn-primary" disabled>Siguiente</button>
+                <div class="card-footer bg-white p-3">
+                     <div class="d-flex justify-content-between">
+                        <button id="prev-step2" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Anterior</button>
+                        <button id="next-step2" class="btn btn-primary" disabled>Siguiente <i class="bi bi-arrow-right"></i></button>
                     </div>
                 </div>
             </div>
@@ -133,37 +150,32 @@
         <!-- Paso 3: Pregunta Final -->
         <div id="step3" class="step-container">
             <div class="card shadow-sm">
-                 <div class="card-header text-center bg-white">
+                <div class="card-header text-center bg-white py-3">
                     <h1>{{ user.get('custom:Comunidad', 'Comunidad no Disponible') }}</h1>
                 </div>
-                <div class="card-body">
-                    <h5 class="card-title">Paso 3: Votación</h5>
-                    <p>Has verificado tu identidad correctamente. Por favor, responde la siguiente pregunta para finalizar.</p>
-                    <div class="form-group">
-                        <label for="final-answer"><strong>¿Estás de acuerdo con el nuevo REGLAMENTO DE COPROPIEDAD?</strong></label>
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="final-answer" id="final-answer-si" value="si" checked>
-                            <label class="form-check-label" for="final-answer-si">Sí</label>
-                        </div>
-                        <div class="form-check">
-                            <input class="form-check-input" type="radio" name="final-answer" id="final-answer-no" value="no">
-                            <label class="form-check-label" for="final-answer-no">No</label>
-                        </div>
+                <div class="card-body p-4">
+                    <h5 class="card-title">Votación</h5>
+                    <p class="mt-3">¿Estás de acuerdo con el nuevo REGLAMENTO DE COPROPIEDAD?</p>
+                    <div class="form-check fs-5 mt-2">
+                        <input class="form-check-input" type="radio" name="final-answer" id="final-answer-si" value="si" checked>
+                        <label class="form-check-label" for="final-answer-si">Sí, apruebo</label>
                     </div>
-                    <div id="final-loader" class="loader"></div>
-                    <div id="final-result" class="mt-3"></div>
+                    <div class="form-check fs-5">
+                        <input class="form-check-input" type="radio" name="final-answer" id="final-answer-no" value="no">
+                        <label class="form-check-label" for="final-answer-no">No, rechazo</label>
+                    </div>
+                    <div id="final-result" class="mt-4"></div>
                 </div>
-                <div class="card-footer">
-                    <div class="d-flex flex-column flex-sm-row justify-content-between">
-                        <button id="prev-step3" class="btn btn-outline-secondary mb-2 mb-sm-0">Anterior</button>
-                        <button id="save-data" class="btn btn-success">Guardar y Finalizar Votación</button>
+                <div class="card-footer bg-white p-3">
+                    <div class="d-flex justify-content-between">
+                        <button id="prev-step3" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> Anterior</button>
+                        <button id="save-data" class="btn btn-success"><i class="bi bi-check-circle-fill"></i> Guardar y Finalizar</button>
                     </div>
                 </div>
             </div>
         </div>
 
     </div>
-
     <script src="{{ url_for('static', filename='js/form.js') }}"></script>
 </body>
 </html>

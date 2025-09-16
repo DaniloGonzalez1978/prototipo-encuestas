@@ -1,9 +1,11 @@
 { pkgs, ... }: {
-  channel = "stable-24.05";
+  # Switching to 'unstable' to resolve issues with the 'tessdata-best' package.
+  channel = "unstable";
   packages = [
     pkgs.python3
     pkgs.tesseract5
-    # pkgs.tessdata_best  # Comentado temporalmente para arreglar la compilación
+    # The 'tessdata-best' package is used for tesseract data.
+    # pkgs.tessdata-best
     pkgs.pkg-config
     pkgs.gcc
     pkgs.stdenv.cc.cc.lib
@@ -13,6 +15,17 @@
   ];
   env = {
     LD_LIBRARY_PATH = pkgs.lib.mkForce "${pkgs.stdenv.cc.cc.lib}/lib";
+    # Updated to use the correct package name
+    # TESSDATA_PREFIX = "${pkgs.tessdata-best}/share/tessdata";
+    # --- BEGIN AWS Configuration -- -
+    # Las credenciales de AWS no deben ser almacenadas aquí.
+    # Este entorno está configurado para leerlas desde el archivo .env
+    # Asegúrate de que las siguientes variables estén en tu .env:
+    # AWS_ACCESS_KEY_ID
+    # AWS_SECRET_ACCESS_KEY
+    # AWS_DEFAULT_REGION
+    # DYNAMODB_TABLE_NAME
+    # --- END AWS Configuration ---
   };
   idx = {
     extensions = [ "ms-python.python" ];
@@ -27,19 +40,15 @@
           source .venv/bin/activate
           pip install --no-cache-dir --force-reinstall -r requirements.txt
         '';
-        open-readme = {
-          openFiles = [ "README.md" "main.py" ];
-        };
       };
-    };
-    previews = {
-      enable = true;
-      previews = {
-        web = {
-          command = ["./devserver.sh"];
-          manager = "web";
-        };
-      };
+      # previews = [
+      #   {
+      #     id = "web";
+      #     name = "Web";
+      #     command = [ "./devserver.sh" ];
+      #     manager = "web";
+      #   }
+      # ];
     };
   };
 }

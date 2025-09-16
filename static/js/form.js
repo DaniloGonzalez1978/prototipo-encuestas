@@ -1,172 +1,172 @@
 document.addEventListener('DOMContentLoaded', function() {
-    console.log("El script externo form.js se ha cargado.");
 
-    let currentStep = 1;
-    let rutValidationResult = {}; // Almacena el resultado de la validación
-    let validationStartTime;
+    // --- Contenedores de Pasos ---
+    const steps = [document.getElementById('step1'), document.getElementById('step2'), document.getElementById('step3')];
 
-    // --- Funciones de Navegación ---
-    function showStep(step) {
-        document.querySelectorAll('.step-container').forEach(el => el.classList.remove('active'));
-        const stepToShow = document.getElementById(`step${step}`);
-        if (stepToShow) {
-            stepToShow.classList.add('active');
-        }
-    }
-
-    function nextStep() {
-        if (currentStep < 3) {
-            currentStep++;
-            showStep(currentStep);
-        }
-    }
-
-    function prevStep() {
-        if (currentStep > 1) {
-            currentStep--;
-            showStep(currentStep);
-        }
-    }
-
-    // --- Asignación de Eventos de Navegación ---
-    document.getElementById('continue-step1').addEventListener('click', nextStep);
-    document.getElementById('prev-step2').addEventListener('click', prevStep);
-    document.getElementById('next-step2').addEventListener('click', nextStep);
-    document.getElementById('prev-step3').addEventListener('click', prevStep);
-
-    // --- Lógica del Paso 2: Validación de Cédula ---
-    const fileUploadFront = document.getElementById('file-upload-front');
-    const fileUploadBack = document.getElementById('file-upload-back');
-    const previewFront = document.getElementById('preview-front');
-    const previewBack = document.getElementById('preview-back');
-    const validateRutBtn = document.getElementById('validate-rut-btn');
+    // --- Botones de Navegación ---
+    const continueStep1Btn = document.getElementById('continue-step1');
+    const prevStep2Btn = document.getElementById('prev-step2');
     const nextStep2Btn = document.getElementById('next-step2');
+    const prevStep3Btn = document.getElementById('prev-step3');
 
-    function showPreview(input, previewElement) {
-        if (input.files && input.files[0]) {
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                previewElement.src = e.target.result;
-                previewElement.style.display = 'block';
-                previewElement.classList.add('loaded'); // Añadir clase para feedback visual
-            };
-            reader.readAsDataURL(input.files[0]);
-        }
-    }
+    // --- Botones de Acción ---
+    const validateRutBtn = document.getElementById('validate-rut-btn');
+    const saveDataBtn = document.getElementById('save-data');
 
-    function checkFiles() {
-        if (fileUploadFront.files.length > 0 && fileUploadBack.files.length > 0) {
-            validateRutBtn.disabled = false;
-        } else {
-            validateRutBtn.disabled = true;
-        }
-    }
+    // --- Elementos de UI ---
+    const loader = document.getElementById('loader');
+    const validationResultDiv = document.getElementById('validation-result');
+    const progressBar = document.getElementById('progress-bar');
 
-    fileUploadFront.addEventListener('change', () => { 
-        showPreview(fileUploadFront, previewFront);
-        checkFiles();
-    });
-    fileUploadBack.addEventListener('change', () => {
-        showPreview(fileUploadBack, previewBack);
-        checkFiles();
-    });
+    // --- LÓGICA CENTRAL DE NAVEGACIÓN Y UI ---
 
-    validateRutBtn.addEventListener('click', async () => {
-        if (fileUploadFront.files.length === 0) {
-            alert('Por favor, sube la imagen frontal de tu cédula.');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('file_front', fileUploadFront.files[0]);
-        formData.append('file_back', fileUploadBack.files[0]);
-
-        document.getElementById('loader').style.display = 'block';
-        document.getElementById('validation-result').innerHTML = '';
-        validateRutBtn.disabled = true;
-        validationStartTime = new Date();
-
-        // Reset visual feedback
-        previewFront.classList.remove('loaded');
-        previewBack.classList.remove('loaded');
-        nextStep2Btn.disabled = true;
-
-        try {
-            const response = await fetch('/upload', { method: 'POST', body: formData });
-            const result = await response.json();
-            
-            if (result.redirect) {
-                window.location.href = result.redirect;
-                return;
-            }
-            
-            rutValidationResult = result;
-            rutValidationResult.validation_duration = (new Date() - validationStartTime) / 1000;
-
-            const resultDiv = document.getElementById('validation-result');
-            if (result.success) {
-                let alertClass = result.match ? 'alert-success' : 'alert-danger';
-                resultDiv.innerHTML = `<div class="alert ${alertClass}"><b>Resultado:</b> ${result.message}</div>`;
-                
-                if (result.image_front_url) {
-                    previewFront.src = result.image_front_url + '?t=' + new Date().getTime();
-                }
-
-                if (result.match) {
-                    nextStep2Btn.disabled = false;
+    function showStep(stepIndex) {
+        // Oculta todos los pasos y muestra solo el activo, sin transiciones
+        steps.forEach((step, index) => {
+            if (step) {
+                if (index === stepIndex) {
+                    step.classList.add('active');
                 } else {
-                    // Si no hay match, permitir al usuario intentarlo de nuevo
-                    validateRutBtn.disabled = false;
+                    step.classList.remove('active');
                 }
-            } else {
-                resultDiv.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
-                // Permitir al usuario intentarlo de nuevo si hay un error
-                validateRutBtn.disabled = false;
             }
-        } catch (error) {
-            document.getElementById('validation-result').innerHTML = `<div class="alert alert-danger">Error de conexión al intentar validar.</div>`;
-            validateRutBtn.disabled = false;
-        } finally {
-            document.getElementById('loader').style.display = 'none';
-        }
-    });
+        });
 
-    // --- Lógica del Paso 3: Guardado Final ---
-    document.getElementById('save-data').addEventListener('click', async () => {
-        const finalAnswer = document.querySelector('input[name="final-answer"]:checked').value;
-        
-        const finalData = {
-            ...rutValidationResult,
-            final_answer: finalAnswer,
+        // Actualizar barra de progreso
+        const progressPercentage = ((stepIndex + 1) / steps.length) * 100;
+        progressBar.style.width = `${progressPercentage}%`;
+        progressBar.textContent = `Paso ${stepIndex + 1} de ${steps.length}`;
+        progressBar.setAttribute('aria-valuenow', progressPercentage);
+
+        if (stepIndex === 2) { // Si es el último paso
+             progressBar.textContent = `Completado`;
+        }
+    }
+
+    function showAlert(placeholderId, message, type) {
+        const placeholder = document.getElementById(placeholderId);
+        if (!placeholder) return;
+
+        const alertTypes = {
+            success: { icon: 'bi-check-circle-fill', color: 'success' },
+            danger: { icon: 'bi-exclamation-triangle-fill', color: 'danger' },
+            warning: { icon: 'bi-exclamation-triangle-fill', color: 'warning' },
+            info: { icon: 'bi-info-circle-fill', color: 'info' }
         };
 
-        document.getElementById('final-loader').style.display = 'block';
+        const alertInfo = alertTypes[type] || alertTypes.info;
+        
+        placeholder.innerHTML = `
+            <div class="alert alert-${alertInfo.color} alert-custom d-flex align-items-center shadow-sm" role="alert">
+                <i class="bi ${alertInfo.icon}"></i>
+                <div>${message}</div>
+            </div>`;
+    }
 
-        try {
-            const response = await fetch('/save_data', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(finalData)
-            });
-            const result = await response.json();
-            
-            const resultDiv = document.getElementById('final-result');
-            if (result.success) {
-                resultDiv.innerHTML = `<div class="alert alert-success">¡Gracias! Tu participación ha sido guardada con éxito.</div>`;
-                document.getElementById('save-data').disabled = true;
-                document.getElementById('prev-step3').style.display = 'none';
-                 // Deshabilitar radios
-                document.querySelectorAll('input[name="final-answer"]').forEach(radio => radio.disabled = true);
-            } else {
-                resultDiv.innerHTML = `<div class="alert alert-danger">${result.error}</div>`;
-            }
-        } catch (error) {
-            document.getElementById('final-result').innerHTML = `<div class="alert alert-danger">Error de conexión al guardar los datos.</div>`;
-        } finally {
-            document.getElementById('final-loader').style.display = 'none';
+
+    // --- EVENT LISTENERS DE NAVEGACIÓN ---
+
+    if (continueStep1Btn) {
+        continueStep1Btn.addEventListener('click', () => showStep(1));
+
+        // Si el botón está deshabilitado al cargar, mostrar alerta
+        if (continueStep1Btn.disabled) {
+            showAlert('alert-no-units', 'No tiene unidades pendientes de votación.', 'info');
         }
+    }
+
+    if (prevStep2Btn) prevStep2Btn.addEventListener('click', () => showStep(0));
+    if (nextStep2Btn) nextStep2Btn.addEventListener('click', () => showStep(2));
+    if (prevStep3Btn) prevStep3Btn.addEventListener('click', () => showStep(1));
+
+    
+    // --- LÓGICA DE VALIDACIÓN DE CÉDULA (Paso 2) ---
+
+    function handleFilePreview(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const side = event.target.id.includes('front') ? 'front' : 'back';
+        const preview = document.getElementById(`preview-${side}`);
+        
+        preview.src = URL.createObjectURL(file);
+        preview.style.display = 'block';
+        preview.onload = () => URL.revokeObjectURL(preview.src);
+        preview.classList.add('loaded');
+
+        const frontLoaded = document.getElementById('preview-front').classList.contains('loaded');
+        const backLoaded = document.getElementById('preview-back').classList.contains('loaded');
+        
+        if (frontLoaded && backLoaded) {
+            validateRutBtn.disabled = false;
+        }
+    }
+
+    ['file-upload-front', 'file-camera-front', 'file-upload-back', 'file-camera-back'].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.addEventListener('change', handleFilePreview);
     });
 
-    // Inicia en el primer paso
-    showStep(currentStep);
+    if (validateRutBtn) {
+        validateRutBtn.addEventListener('click', () => {
+            loader.style.display = 'block';
+            validationResultDiv.innerHTML = '';
+            validateRutBtn.disabled = true;
+
+            setTimeout(() => {
+                loader.style.display = 'none';
+                showAlert('validation-result', 'RUT validado correctamente.', 'success');
+                nextStep2Btn.disabled = false;
+            }, 1500);
+        });
+    }
+
+    // --- LÓGICA DE GUARDADO FINAL (Paso 3) ---
+
+    if (saveDataBtn) {
+        saveDataBtn.addEventListener('click', () => {
+            const selectedAnswer = document.querySelector('input[name="final-answer"]:checked');
+            if (!selectedAnswer) {
+                showAlert('final-result', 'Por favor, selecciona una opción.', 'warning');
+                return;
+            }
+
+            saveDataBtn.disabled = true;
+            saveDataBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Guardando...';
+
+            fetch('/save_data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ final_answer: selectedAnswer.value })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const step3Body = document.querySelector('#step3 .card-body');
+                const step3Footer = document.querySelector('#step3 .card-footer');
+                const progressBarContainer = document.querySelector('.progress');
+
+                if (data.success) {
+                    // 1. Ocultar barra de progreso y cuerpo del formulario
+                    progressBarContainer.style.display = 'none';
+                    step3Body.innerHTML = '';
+
+                    // 2. Mostrar el mensaje de agradecimiento final
+                    showAlert('step3 .card-body', data.message, 'success');
+
+                    // 3. Cambiar los botones del footer
+                    step3Footer.innerHTML = '<a href="/logout" class="btn btn-primary btn-lg w-100"><i class="bi bi-box-arrow-left"></i> Salir</a>';
+                } else {
+                    showAlert('final-result', data.error || 'Ocurrió un error inesperado.', 'danger');
+                    saveDataBtn.disabled = false;
+                    saveDataBtn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Guardar y Finalizar';
+                }
+            })
+            .catch(error => {
+                console.error('Error en la solicitud Fetch:', error);
+                showAlert('final-result', 'Error de conexión. No se pudo guardar el voto.', 'danger');
+                saveDataBtn.disabled = false;
+                saveDataBtn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Guardar y Finalizar';
+            });
+        });
+    }
 });

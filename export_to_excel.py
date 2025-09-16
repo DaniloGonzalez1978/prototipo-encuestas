@@ -1,144 +1,189 @@
-
-import sqlite3
-from openpyxl import Workbook
-from openpyxl.drawing.image import Image
-from PIL import Image as PILImage
 import os
-import errno
+import boto3
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as OpenpyxlImage
+from openpyxl.utils import get_column_letter
+from PIL import Image as PILImage
+from dotenv import load_dotenv
+import io
 
-DB_PATH = "instance/database.sqlite"
-OUTPUT_FILE = "static/exported_data.xlsx"
+# Cargar variables de entorno desde .env
+load_dotenv()
+
+# --- Configuraciones ---
+OUTPUT_FILE = "participaciones_export.xlsx"
+IMAGE_WIDTH = 240
+IMAGE_HEIGHT = 150
+
+def get_all_items_from_dynamodb(table_name, dynamodb_client):
+    """
+    Extrae todos los items de una tabla de DynamoDB usando paginación.
+    """
+    items = []
+    try:
+        paginator = dynamodb_client.get_paginator('scan')
+        page_iterator = paginator.paginate(TableName=table_name, PaginationConfig={'PageSize': 100})
+        for page in page_iterator:
+            items.extend(page['Items'])
+        print(f"Se encontraron {len(items)} registros en la tabla '{table_name}'.")
+        return items
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ResourceNotFoundException':
+            print(f"Error Crítico: La tabla '{table_name}' no fue encontrada en la región configurada.")
+        else:
+            print(f"Error de AWS al escanear la tabla: {e}")
+        return None
+
+def deserialize_dynamodb_item(item):
+    """
+    Convierte un item de DynamoDB (con tipos de datos) a un diccionario de Python simple.
+    """
+    deserialized = {}
+    for key, value in item.items():
+        data_type = list(value.keys())[0]
+        val = value[data_type]
+        
+        if data_type == 'S':
+            deserialized[key] = val
+        elif data_type == 'N':
+            try:
+                deserialized[key] = int(val)
+            except (ValueError, TypeError):
+                try:
+                    deserialized[key] = float(val)
+                except (ValueError, TypeError):
+                    deserialized[key] = val
+        elif data_type == 'BOOL':
+            deserialized[key] = val
+        elif data_type == 'NULL':
+            deserialized[key] = None
+        else:
+            deserialized[key] = str(val)
+    return deserialized
 
 def export_to_excel():
     """
-    Connects to the SQLite database, fetches all data from the 'user_response' table,
-    and exports it to an Excel file, including all device data and images.
+    Extrae datos de DynamoDB y los exporta a un archivo Excel, incrustando imágenes.
     """
-    temp_files_to_delete = []
+    print("Iniciando la exportación a Excel...")
+
+    # 1. Conexión a DynamoDB
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row  # Access columns by name
-        cursor = conn.cursor()
-        
-        # Select all columns from the table
-        cursor.execute("SELECT * FROM user_response")
-        rows = cursor.fetchall()
-        conn.close()
-
-        if not rows:
-            print("No data found in the 'user_response' table.")
+        dynamodb_client = boto3.client(
+            'dynamodb',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_DEFAULT_REGION')
+        )
+        table_name = os.getenv('DYNAMODB_TABLE_NAME')
+        if not table_name:
+            print("Error: La variable de entorno DYNAMODB_TABLE_NAME no está definida.")
             return
+    except (NoCredentialsError, PartialCredentialsError):
+        print("Error de Autenticación: Credenciales de AWS no encontradas.")
+        return
 
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "User Responses"
+    # 2. Extracción y Procesamiento de Datos
+    items_raw = get_all_items_from_dynamodb(table_name, dynamodb_client)
+    if items_raw is None:
+        print("La exportación ha fallado debido a un error con DynamoDB.")
+        return
+    if not items_raw:
+        print("No se encontraron datos para exportar.")
+        return
 
-        # Define headers including the new validation_attempts column
-        headers = [
-            "ID", "RUT", "Comunidad", "Unidad", "Email", "Respuesta", 
-            "Fecha de Votación", "Fecha de Login", "Fecha de Validación", "Intentos de Validación",
-            "IP Address", "User Agent", "Screen Resolution", "Available Screen Res",
-            "Color Depth", "Timezone", "Platform", "Do Not Track", "CPU Cores",
-            "Device Memory", "Battery Level", "Battery Status", "Connection Type",
-            "Connection Quality", "Path Imagen Frontal", "Path Imagen Trasera",
-            "Imagen Frontal", "Imagen Trasera"
-        ]
-        ws.append(headers)
+    processed_items = []
+    for item_raw in items_raw:
+        item = deserialize_dynamodb_item(item_raw)
+        unidades_str = item.get('unidad', '')
+        unidades_list = [unidad.strip() for unidad in unidades_str.split(',') if unidad.strip()]
+        
+        if not unidades_list:
+            processed_items.append(item)
+        else:
+            for unidad in unidades_list:
+                item_copy = item.copy()
+                item_copy['unidad'] = unidad
+                processed_items.append(item_copy)
 
-        # Adjust column widths for better readability
-        column_widths = {
-            'A': 5, 'B': 15, 'C': 20, 'D': 20, 'E': 30, 'F': 40, 'G': 20, 'H': 20,
-            'I': 20, 'J': 20, 'K': 15, 'L': 50, 'M': 20, 'N': 20, 'O': 15, 'P': 15, 
-            'Q': 15, 'R': 15, 'S': 10, 'T': 15, 'U': 15, 'V': 15, 'W': 15, 'X': 15,
-            'Y': 40, 'Z': 40, 'AA': 35, 'AB': 35
-        }
-        for col_letter, width in column_widths.items():
-            ws.column_dimensions[col_letter].width = width
+    print(f"Total de filas a exportar después de procesar unidades: {len(processed_items)}")
 
-        for row_idx, row_data in enumerate(rows, start=2):
-            # Set a fixed row height for image display
-            ws.row_dimensions[row_idx].height = 115
+    # 3. Creación del Libro de Excel
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Participaciones"
 
-            # Map data to cells, using column names for clarity
-            ws.cell(row=row_idx, column=1, value=row_data['id'])
-            ws.cell(row=row_idx, column=2, value=row_data['rut'])
-            ws.cell(row=row_idx, column=3, value=row_data['comunidad'])
-            ws.cell(row=row_idx, column=4, value=row_data['unidad'])
-            ws.cell(row=row_idx, column=5, value=row_data['email'])
-            ws.cell(row=row_idx, column=6, value=row_data['respuesta'])
-            ws.cell(row=row_idx, column=7, value=row_data['submission_timestamp'])
-            ws.cell(row=row_idx, column=8, value=row_data['login_timestamp'])
-            ws.cell(row=row_idx, column=9, value=row_data['validation_timestamp'])
-            ws.cell(row=row_idx, column=10, value=row_data['validation_attempts'])
-            ws.cell(row=row_idx, column=11, value=row_data['ip_address'])
-            ws.cell(row=row_idx, column=12, value=row_data['user_agent'])
-            ws.cell(row=row_idx, column=13, value=row_data['screen_resolution'])
-            ws.cell(row=row_idx, column=14, value=row_data['available_screen_resolution'])
-            ws.cell(row=row_idx, column=15, value=row_data['color_depth'])
-            ws.cell(row=row_idx, column=16, value=row_data['timezone'])
-            ws.cell(row=row_idx, column=17, value=row_data['platform'])
-            ws.cell(row=row_idx, column=18, value=row_data['do_not_track'])
-            ws.cell(row=row_idx, column=19, value=row_data['cpu_cores'])
-            ws.cell(row=row_idx, column=20, value=row_data['device_memory'])
-            ws.cell(row=row_idx, column=21, value=row_data['battery_level'])
-            ws.cell(row=row_idx, column=22, value=row_data['battery_status'])
-            ws.cell(row=row_idx, column=23, value=row_data['connection_type'])
-            ws.cell(row=row_idx, column=24, value=row_data['connection_quality'])
-            ws.cell(row=row_idx, column=25, value=row_data['id_card_front_image'])
-            ws.cell(row=row_idx, column=26, value=row_data['id_card_back_image'])
-            
-            # --- Process and insert front image ---
-            front_img_path = row_data['id_card_front_image']
-            if front_img_path and os.path.exists(front_img_path):
+    headers = [
+        "RUT", "Nombre", "Email", "Comunidad", "Unidad", "Decisión", "Éxito de Match", 
+        "RUT en Imagen", "Tiempo de Votación", "Tiempo de Login", "Intentos de Validación", 
+        "Contador de Logins", "Tiempo de Validación (seg)", 
+        "URL Imagen Frontal", "URL Imagen Trasera", "Imagen Frontal", "Imagen Trasera"
+    ]
+    ws.append(headers)
+
+    column_widths = {'P': IMAGE_WIDTH / 7, 'Q': IMAGE_WIDTH / 7}
+    for col_idx, header in enumerate(headers, 1):
+        col_letter = get_column_letter(col_idx)
+        if col_letter not in column_widths:
+            ws.column_dimensions[col_letter].width = max(len(header) + 2, 15)
+
+    # 4. Llenado de Filas y Imágenes
+    for row_idx, item in enumerate(processed_items, start=2):
+        ws.row_dimensions[row_idx].height = IMAGE_HEIGHT * 0.75
+        
+        ws.cell(row=row_idx, column=1, value=item.get("rut", "N/A"))
+        ws.cell(row=row_idx, column=2, value=item.get("nombre", "N/A"))
+        ws.cell(row=row_idx, column=3, value=item.get("email", "N/A"))
+        ws.cell(row=row_idx, column=4, value=item.get("comunidad", "N/A"))
+        ws.cell(row=row_idx, column=5, value=item.get("unidad", "N/A"))
+        ws.cell(row=row_idx, column=6, value=item.get("decision_reglamento", "N/A"))
+        ws.cell(row=row_idx, column=7, value="Sí" if item.get("rut_match_success") else "No")
+        ws.cell(row=row_idx, column=8, value=item.get("rut_detectado_imagen", "N/A"))
+        ws.cell(row=row_idx, column=9, value=item.get("timestamp_votacion", "N/A"))
+        ws.cell(row=row_idx, column=10, value=item.get("timestamp_login", "N/A"))
+        ws.cell(row=row_idx, column=11, value=item.get("intentos_validacion_rut", 0))
+        ws.cell(row=row_idx, column=12, value=item.get("contador_logins", 0))
+        ws.cell(row=row_idx, column=13, value=item.get("tiempo_validacion_seg", 0))
+        ws.cell(row=row_idx, column=14, value=item.get("url_img_frontal", "N/A"))
+        ws.cell(row=row_idx, column=15, value=item.get("url_img_trasera", "N/A"))
+
+        image_urls = {16: item.get("url_img_frontal"), 17: item.get("url_img_trasera")}
+
+        for col_num, img_url in image_urls.items():
+            cell_coordinate = get_column_letter(col_num) + str(row_idx)
+            if not img_url or img_url == "N/A":
+                ws[cell_coordinate] = "URL no disponible"
+                continue
+
+            img_path = img_url.lstrip('/')
+            if os.path.exists(img_path):
                 try:
-                    pil_img = PILImage.open(front_img_path)
-                    if pil_img.height > pil_img.width:
-                        pil_img = pil_img.rotate(90, expand=True)
-                    pil_img = pil_img.resize((240, 150))
-                    temp_img_path = f"temp_front_{os.path.basename(front_img_path)}"
-                    pil_img.save(temp_img_path)
-                    temp_files_to_delete.append(temp_img_path)
-                    img = Image(temp_img_path)
-                    ws.add_image(img, f"AA{row_idx}")
-                except Exception as e:
-                    print(f"Error processing image {front_img_path}: {e}")
-                    ws.cell(row=row_idx, column=27, value="Error al procesar")
-            else:
-                ws.cell(row=row_idx, column=27, value="Imagen no encontrada")
+                    with PILImage.open(img_path) as pil_img:
+                        # CORRECCIÓN: Rotar 90 grados en sentido horario
+                        if pil_img.height > pil_img.width:
+                            pil_img = pil_img.rotate(90, expand=True)
 
-            # --- Process and insert back image ---
-            back_img_path = row_data['id_card_back_image']
-            if back_img_path and os.path.exists(back_img_path):
-                try:
-                    pil_img = PILImage.open(back_img_path)
-                    if pil_img.height > pil_img.width:
-                        pil_img = pil_img.rotate(90, expand=True)
-                    pil_img = pil_img.resize((240, 150))
-                    temp_img_path = f"temp_back_{os.path.basename(back_img_path)}"
-                    pil_img.save(temp_img_path)
-                    temp_files_to_delete.append(temp_img_path)
-                    img = Image(temp_img_path)
-                    ws.add_image(img, f"AB{row_idx}")
+                        pil_img.thumbnail((IMAGE_WIDTH, IMAGE_HEIGHT))
+                        
+                        img_byte_arr = io.BytesIO()
+                        pil_img.save(img_byte_arr, format='PNG')
+                        img_byte_arr.seek(0)
+                        
+                        img_to_add = OpenpyxlImage(img_byte_arr)
+                        ws.add_image(img_to_add, cell_coordinate)
                 except Exception as e:
-                    print(f"Error processing image {back_img_path}: {e}")
-                    ws.cell(row=row_idx, column=28, value="Error al procesar")
+                    print(f"Error al procesar la imagen {img_path}: {e}")
+                    ws[cell_coordinate] = "Error al procesar"
             else:
-                ws.cell(row=row_idx, column=28, value="Imagen no encontrada")
+                ws[cell_coordinate] = "Imagen no encontrada"
 
+    # 5. Guardado del Archivo
+    try:
         wb.save(OUTPUT_FILE)
-        print(f"Data successfully exported to {OUTPUT_FILE}")
-
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        print(f"¡Éxito! Los datos han sido exportados a '{OUTPUT_FILE}'.")
     except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        for temp_file in temp_files_to_delete:
-            try:
-                os.remove(temp_file)
-            except OSError as e:
-                if e.errno != errno.ENOENT:
-                    print(f"Error deleting temp file {temp_file}: {e}")
+        print(f"Error al guardar el archivo Excel: {e}")
 
 if __name__ == "__main__":
     export_to_excel()
