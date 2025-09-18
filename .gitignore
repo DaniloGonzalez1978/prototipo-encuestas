@@ -3,3 +3,9 @@
 
 # Directorio de subidas de archivos de prueba
 static/uploads/
+
+# Archivos de entorno y secretos
+/.env
+
+# Carpetas de caché de Python
+__pycache__/
