@@ -64,9 +64,9 @@ def deserialize_dynamodb_item(item):
 
 def export_to_excel():
     """
-    Extrae datos de DynamoDB y los exporta a un archivo Excel, incrustando imágenes.
+    Extrae todos los datos de DynamoDB dinámicamente y los exporta a un archivo Excel.
     """
-    print("Iniciando la exportación a Excel...")
+    print("Iniciando la exportación dinámica a Excel...")
 
     # 1. Conexión a DynamoDB
     try:
@@ -84,7 +84,7 @@ def export_to_excel():
         print("Error de Autenticación: Credenciales de AWS no encontradas.")
         return
 
-    # 2. Extracción y Procesamiento de Datos
+    # 2. Extracción y Deserialización de Datos
     items_raw = get_all_items_from_dynamodb(table_name, dynamodb_client)
     if items_raw is None:
         print("La exportación ha fallado debido a un error con DynamoDB.")
@@ -93,62 +93,59 @@ def export_to_excel():
         print("No se encontraron datos para exportar.")
         return
 
-    processed_items = []
-    for item_raw in items_raw:
-        item = deserialize_dynamodb_item(item_raw)
-        unidades_str = item.get('unidad', '')
-        unidades_list = [unidad.strip() for unidad in unidades_str.split(',') if unidad.strip()]
-        
-        if not unidades_list:
-            processed_items.append(item)
-        else:
-            for unidad in unidades_list:
-                item_copy = item.copy()
-                item_copy['unidad'] = unidad
-                processed_items.append(item_copy)
+    processed_items = [deserialize_dynamodb_item(item) for item in items_raw]
+    print(f"Total de filas a exportar: {len(processed_items)}")
 
-    print(f"Total de filas a exportar después de procesar unidades: {len(processed_items)}")
+    # 3. Creación Dinámica de Encabezados
+    all_keys = set()
+    for item in processed_items:
+        all_keys.update(item.keys())
+    
+    # Mover columnas de imágenes al final
+    image_headers = ["Imagen Frontal", "Imagen Trasera"]
+    url_headers = ["url_img_frontal", "url_img_trasera"]
+    
+    data_headers = sorted([key for key in all_keys if key not in url_headers])
+    final_headers = data_headers + url_headers + image_headers
 
-    # 3. Creación del Libro de Excel
+    # 4. Creación del Libro de Excel
     wb = Workbook()
     ws = wb.active
     ws.title = "Participaciones"
+    ws.append(final_headers)
 
-    headers = [
-        "RUT", "Nombre", "Email", "Comunidad", "Unidad", "Decisión", "Éxito de Match", 
-        "RUT en Imagen", "Tiempo de Votación", "Tiempo de Login", "Intentos de Validación", 
-        "Contador de Logins", "Tiempo de Validación (seg)", 
-        "URL Imagen Frontal", "URL Imagen Trasera", "Imagen Frontal", "Imagen Trasera"
-    ]
-    ws.append(headers)
+    header_to_col_idx = {header: i for i, header in enumerate(final_headers, 1)}
 
-    column_widths = {'P': IMAGE_WIDTH / 7, 'Q': IMAGE_WIDTH / 7}
-    for col_idx, header in enumerate(headers, 1):
+    # Ajustar ancho de columnas
+    for col_idx, header in enumerate(final_headers, 1):
         col_letter = get_column_letter(col_idx)
-        if col_letter not in column_widths:
-            ws.column_dimensions[col_letter].width = max(len(header) + 2, 15)
+        if header in image_headers:
+             ws.column_dimensions[col_letter].width = IMAGE_WIDTH / 7
+        else:
+             ws.column_dimensions[col_letter].width = max(len(str(header)) + 2, 20)
 
-    # 4. Llenado de Filas y Imágenes
+    # 5. Llenado de Filas y Imágenes
     for row_idx, item in enumerate(processed_items, start=2):
         ws.row_dimensions[row_idx].height = IMAGE_HEIGHT * 0.75
         
-        ws.cell(row=row_idx, column=1, value=item.get("rut", "N/A"))
-        ws.cell(row=row_idx, column=2, value=item.get("nombre", "N/A"))
-        ws.cell(row=row_idx, column=3, value=item.get("email", "N/A"))
-        ws.cell(row=row_idx, column=4, value=item.get("comunidad", "N/A"))
-        ws.cell(row=row_idx, column=5, value=item.get("unidad", "N/A"))
-        ws.cell(row=row_idx, column=6, value=item.get("decision_reglamento", "N/A"))
-        ws.cell(row=row_idx, column=7, value="Sí" if item.get("rut_match_success") else "No")
-        ws.cell(row=row_idx, column=8, value=item.get("rut_detectado_imagen", "N/A"))
-        ws.cell(row=row_idx, column=9, value=item.get("timestamp_votacion", "N/A"))
-        ws.cell(row=row_idx, column=10, value=item.get("timestamp_login", "N/A"))
-        ws.cell(row=row_idx, column=11, value=item.get("intentos_validacion_rut", 0))
-        ws.cell(row=row_idx, column=12, value=item.get("contador_logins", 0))
-        ws.cell(row=row_idx, column=13, value=item.get("tiempo_validacion_seg", 0))
-        ws.cell(row=row_idx, column=14, value=item.get("url_img_frontal", "N/A"))
-        ws.cell(row=row_idx, column=15, value=item.get("url_img_trasera", "N/A"))
+        # Llenar datos dinámicamente
+        for header, col_idx in header_to_col_idx.items():
+            if header in item:
+                value = item[header]
+                # Formateo especial para booleanos
+                if isinstance(value, bool):
+                    value = "Sí" if value else "No"
+                ws.cell(row=row_idx, column=col_idx, value=value)
+            else:
+                # Dejar en blanco si el item no tiene esa clave (excepto para las columnas de imagen)
+                if header not in image_headers:
+                    ws.cell(row=row_idx, column=col_idx, value="N/A")
 
-        image_urls = {16: item.get("url_img_frontal"), 17: item.get("url_img_trasera")}
+        # Incrustar imágenes
+        image_urls = {
+            header_to_col_idx["Imagen Frontal"]: item.get("url_img_frontal"), 
+            header_to_col_idx["Imagen Trasera"]: item.get("url_img_trasera")
+        }
 
         for col_num, img_url in image_urls.items():
             cell_coordinate = get_column_letter(col_num) + str(row_idx)
@@ -160,9 +157,9 @@ def export_to_excel():
             if os.path.exists(img_path):
                 try:
                     with PILImage.open(img_path) as pil_img:
-                        # CORRECCIÓN: Rotar 90 grados en sentido horario
+                        # Rotar si es necesario
                         if pil_img.height > pil_img.width:
-                            pil_img = pil_img.rotate(90, expand=True)
+                            pil_img = pil_img.rotate(-90, expand=True)
 
                         pil_img.thumbnail((IMAGE_WIDTH, IMAGE_HEIGHT))
                         
@@ -178,10 +175,10 @@ def export_to_excel():
             else:
                 ws[cell_coordinate] = "Imagen no encontrada"
 
-    # 5. Guardado del Archivo
+    # 6. Guardado del Archivo
     try:
         wb.save(OUTPUT_FILE)
-        print(f"¡Éxito! Los datos han sido exportados a '{OUTPUT_FILE}'.")
+        print(f"¡Éxito! Los datos han sido exportados dinámicamente a '{OUTPUT_FILE}'.")
     except Exception as e:
         print(f"Error al guardar el archivo Excel: {e}")
 

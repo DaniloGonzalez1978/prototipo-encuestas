@@ -21,19 +21,24 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // --- Inputs de archivos ---
     const fileUploadFrontInput = document.getElementById('file-upload-front');
-    const fileUploadBackInput = document.getElementById('file-upload-back');
     const fileCameraFrontInput = document.getElementById('file-camera-front');
+    const fileUploadBackInput = document.getElementById('file-upload-back');
     const fileCameraBackInput = document.getElementById('file-camera-back');
 
+    // --- Modal y Cropper ---
+    const cropModalEl = document.getElementById('cropModal');
+    const cropModal = new bootstrap.Modal(cropModalEl);
+    const imageToCrop = document.getElementById('image-to-crop');
+    const cropAndSaveBtn = document.getElementById('crop-and-save');
+    let cropper;
+    let currentCropSide = 'front'; // 'front' or 'back'
     let frontFile, backFile;
 
     // --- LÓGICA CENTRAL DE NAVEGACIÓN Y UI ---
 
     function showStep(stepIndex) {
         steps.forEach((step, index) => {
-            if (step) {
-                step.style.display = (index === stepIndex) ? 'block' : 'none';
-            }
+            if (step) step.style.display = (index === stepIndex) ? 'block' : 'none';
         });
 
         const progressPercentage = ((stepIndex + 1) / steps.length) * 100;
@@ -41,79 +46,96 @@ document.addEventListener('DOMContentLoaded', function() {
         progressBar.textContent = `Paso ${stepIndex + 1} de ${steps.length}`;
         progressBar.setAttribute('aria-valuenow', progressPercentage);
         
-        if (stepIndex === 2) {
-             progressBar.textContent = `Paso Final`;
-        }
+        if (stepIndex === 2) progressBar.textContent = `Paso Final`;
     }
 
     function showAlert(placeholderId, message, type) {
         const placeholder = document.getElementById(placeholderId);
         if (!placeholder) return;
-
-        const alertTypes = {
-            success: { icon: 'bi-check-circle-fill', color: 'success' },
-            danger: { icon: 'bi-exclamation-triangle-fill', color: 'danger' },
-            warning: { icon: 'bi-exclamation-triangle-fill', color: 'warning' },
-            info: { icon: 'bi-info-circle-fill', color: 'info' }
-        };
-
-        const alertInfo = alertTypes[type] || alertTypes.info;
-        
-        placeholder.innerHTML = `
-            <div class="alert alert-${alertInfo.color} alert-custom d-flex align-items-start shadow-sm" role="alert">
-                <i class="bi ${alertInfo.icon} me-3 mt-1"></i>
-                <div style="white-space: pre-line;">${message}</div>
-            </div>`;
+        const alertInfo = { success: { icon: 'bi-check-circle-fill', color: 'success' }, danger: { icon: 'bi-exclamation-triangle-fill', color: 'danger' }, warning: { icon: 'bi-exclamation-triangle-fill', color: 'warning' }, info: { icon: 'bi-info-circle-fill', color: 'info' } }[type] || { icon: 'bi-info-circle-fill', color: 'info' };
+        placeholder.innerHTML = `<div class="alert alert-${alertInfo.color} alert-custom d-flex align-items-start shadow-sm" role="alert"><i class="bi ${alertInfo.icon} me-3 mt-1"></i><div style="white-space: pre-line;">${message}</div></div>`;
     }
 
     // --- EVENT LISTENERS DE NAVEGACIÓN ---
-
     if (continueStep1Btn) {
         continueStep1Btn.addEventListener('click', () => showStep(1));
-        if (continueStep1Btn.disabled) {
-            showAlert('alert-no-units', 'Ya has completado la votación para todas tus unidades.', 'info');
-        }
+        if (continueStep1Btn.disabled) showAlert('alert-no-units', 'Ya has completado la votación para todas tus unidades.', 'info');
     }
-
     if (prevStep2Btn) prevStep2Btn.addEventListener('click', () => showStep(0));
     if (nextStep2Btn) nextStep2Btn.addEventListener('click', () => showStep(2));
     if (prevStep3Btn) prevStep3Btn.addEventListener('click', () => showStep(1));
 
-    
-    // --- LÓGICA DE VALIDACIÓN DE CÉDULA (Paso 2) ---
+    // --- LÓGICA DE RECORTE Y VALIDACIÓN DE CÉDULA (Paso 2) ---
 
-    function handleFileSelect(event) {
+    function startCropper(event) {
         const file = event.target.files[0];
         if (!file) return;
 
-        const isFront = event.target.id.includes('front');
-        const previewId = isFront ? 'preview-front' : 'preview-back';
-        const preview = document.getElementById(previewId);
-        
-        if (isFront) {
-            frontFile = file;
-        } else {
-            backFile = file;
-        }
+        currentCropSide = event.target.id.includes('front') ? 'front' : 'back';
 
-        preview.src = URL.createObjectURL(file);
-        preview.style.display = 'block';
-        preview.onload = () => URL.revokeObjectURL(preview.src);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            imageToCrop.src = e.target.result;
+            cropModal.show();
+        };
+        reader.readAsDataURL(file);
 
-        // Habilitar el botón de validación solo si la imagen frontal está cargada.
-        if (frontFile) {
-            validateRutBtn.disabled = false;
-        }
+        // Limpiar el valor del input para permitir seleccionar el mismo archivo de nuevo
+        event.target.value = '';
+    }
+
+    cropModalEl.addEventListener('shown.bs.modal', () => {
+        if (cropper) cropper.destroy();
+        cropper = new Cropper(imageToCrop, {
+            aspectRatio: 85.6 / 53.98, // Proporción de tarjeta de crédito/cédula
+            viewMode: 2,
+            dragMode: 'move',
+            background: false,
+            autoCropArea: 0.9,
+        });
+    });
+
+    if (cropAndSaveBtn) {
+        cropAndSaveBtn.addEventListener('click', () => {
+            const canvas = cropper.getCroppedCanvas({
+                width: 856,
+                height: 540,
+                imageSmoothingQuality: 'high',
+            });
+
+            canvas.toBlob((blob) => {
+                const fileName = currentCropSide === 'front' ? 'id_frontal_recortada.jpg' : 'id_trasera_recortada.jpg';
+                const croppedFile = new File([blob], fileName, { type: 'image/jpeg', lastModified: Date.now() });
+                
+                const previewId = `preview-${currentCropSide}`;
+                const preview = document.getElementById(previewId);
+
+                if (currentCropSide === 'front') {
+                    frontFile = croppedFile;
+                } else {
+                    backFile = croppedFile;
+                }
+
+                preview.src = URL.createObjectURL(croppedFile);
+                preview.style.display = 'block';
+                preview.classList.add('loaded');
+                preview.onload = () => URL.revokeObjectURL(preview.src);
+
+                if (frontFile) validateRutBtn.disabled = false;
+                
+                cropModal.hide();
+            }, 'image/jpeg', 0.9);
+        });
     }
 
     [fileUploadFrontInput, fileCameraFrontInput, fileUploadBackInput, fileCameraBackInput].forEach(input => {
-        if (input) input.addEventListener('change', handleFileSelect);
+        if (input) input.addEventListener('change', startCropper);
     });
 
     if (validateRutBtn) {
         validateRutBtn.addEventListener('click', () => {
             if (!frontFile) {
-                showAlert('validation-result', 'Debes subir al menos la imagen frontal de tu carnet.', 'warning');
+                showAlert('validation-result', 'Debes subir y recortar la imagen frontal de tu carnet.', 'warning');
                 return;
             }
 
@@ -124,100 +146,64 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const formData = new FormData();
             formData.append('id_frontal', frontFile);
-            if (backFile) {
-                formData.append('id_trasera', backFile);
-            }
+            if (backFile) formData.append('id_trasera', backFile);
 
-            // INICIO DEL CÓDIGO REAL
-            fetch('/validate_rut', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                if (!response.ok) {
-                    // Si la respuesta no es OK, intenta leer el JSON del error
-                    return response.json().then(err => { throw new Error(err.error || `Error del servidor: ${response.statusText}`) });
-                }
-                return response.json();
-            })
+            fetch('/validate_rut', { method: 'POST', body: formData })
+            .then(response => response.ok ? response.json() : response.json().then(err => { throw new Error(err.error || `Error: ${response.statusText}`) }))
             .then(data => {
                 loader.style.display = 'none';
                 if (data.success) {
                     if (data.rut_match) {
-                        showAlert('validation-result', `✅ ¡Validación exitosa! El RUT de la imagen (${data.extracted_rut}) coincide con tu registro.`, 'success');
-                        nextStep2Btn.disabled = false; // Habilitar el botón para continuar
+                        showAlert('validation-result', `✅ ¡Validación exitosa! El RUT de la imagen (${data.extracted_rut}) coincide.`, 'success');
+                        nextStep2Btn.disabled = false;
                     } else {
-                        showAlert('validation-result', `⚠️ El RUT de la imagen (${data.extracted_rut}) no coincide con el RUT registrado (${data.user_rut}). Por favor, inténtalo de nuevo con una imagen más clara.`, 'warning');
-                        validateRutBtn.disabled = false; // Permitir reintentar
+                        showAlert('validation-result', `⚠️ El RUT de la imagen (${data.extracted_rut}) no coincide con tu registro (${data.user_rut}). Por favor, intenta con una nueva foto.`, 'warning');
+                        validateRutBtn.disabled = false;
                     }
                 } else {
-                    showAlert('validation-result', `❌ Error en la validación: ${data.error}`, 'danger');
+                    showAlert('validation-result', `❌ Error: ${data.error}`, 'danger');
                     validateRutBtn.disabled = false;
                 }
             })
             .catch(error => {
-                console.error('Error en la validación:', error);
                 loader.style.display = 'none';
-                showAlert('validation-result', `❌ Error de conexión o del servidor: ${error.message}. Inténtalo de nuevo.`, 'danger');
+                showAlert('validation-result', `❌ Error de conexión o servidor: ${error.message}. Inténtalo de nuevo.`, 'danger');
                 validateRutBtn.disabled = false;
             });
-            // FIN DEL CÓDIGO REAL
         });
     }
 
     // --- LÓGICA DE GUARDADO FINAL (Paso 3) ---
-
     if (saveDataBtn) {
         saveDataBtn.addEventListener('click', () => {
             const selectedAnswer = document.querySelector('input[name="final-answer"]:checked');
             if (!selectedAnswer) {
-                showAlert('final-result', 'Por favor, selecciona una opción para el reglamento.', 'warning');
+                showAlert('final-result', 'Por favor, selecciona una opción.', 'warning');
                 return;
             }
 
             saveDataBtn.disabled = true;
             saveDataBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Guardando...';
 
-            fetch('/save_data', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ final_answer: selectedAnswer.value })
-            })
+            fetch('/save_data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ final_answer: selectedAnswer.value }) })
             .then(response => response.json())
             .then(data => {
-                const step3Body = document.querySelector('#step3 .card-body');
-                const step3Footer = document.querySelector('#step3 .card-footer');
-                const progressBarContainer = document.querySelector('.progress-container'); // Target a container
-
                 if (data.success) {
-                    if(progressBarContainer) progressBarContainer.style.display = 'none';
-                    step3Body.innerHTML = '';
-                    
-                    // Crear un contenedor específico si no existe
-                    let alertContainer = document.getElementById('step3-final-alert');
-                    if (!alertContainer) {
-                        alertContainer = document.createElement('div');
-                        alertContainer.id = 'step3-final-alert';
-                        step3Body.appendChild(alertContainer);
-                    }
-
-                    showAlert(alertContainer.id, data.message, 'success');
-                    step3Footer.innerHTML = '<a href="/logout" class="btn btn-primary btn-lg w-100"><i class="bi bi-box-arrow-left"></i> Salir de la sesión</a>';
+                    // ¡CORRECCIÓN! Redirige a la página de inicio para mostrar el mensaje de agradecimiento.
+                    window.location.href = '/';
                 } else {
-                    showAlert('final-result', data.error || 'Ocurrió un error inesperado al guardar.', 'danger');
+                    showAlert('final-result', data.error || 'Ocurrió un error inesperado.', 'danger');
                     saveDataBtn.disabled = false;
                     saveDataBtn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Guardar y Finalizar';
                 }
             })
             .catch(error => {
-                console.error('Error en la solicitud Fetch:', error);
-                showAlert('final-result', 'Error de conexión. No se pudo guardar tu voto.', 'danger');
+                showAlert('final-result', 'Error de conexión. No se pudo guardar.', 'danger');
                 saveDataBtn.disabled = false;
                 saveDataBtn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Guardar y Finalizar';
             });
         });
     }
 
-    // Inicializar en el primer paso
     showStep(0);
 });

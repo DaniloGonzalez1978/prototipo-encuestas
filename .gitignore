@@ -1,9 +1,5 @@
-# Python virtual environment
-.venv/
+# Archivos y carpetas generados por el sistema
+*.xlsx
 
-# Environment variables file
-.env
-
-# Python cache
-__pycache__/
-*.pyc
+# Directorio de subidas de archivos de prueba
+static/uploads/
