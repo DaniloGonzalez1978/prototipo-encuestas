@@ -14,9 +14,9 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
         .container { max-width: 800px; }
+        .progress-container { margin-bottom: 1.5rem; }
         .progress { border-radius: 0.5rem; }
         .card { 
-            margin-top: 1.5rem; 
             border: none;
             border-radius: 0.5rem;
         }
@@ -37,7 +37,6 @@
         }
         .img-preview.loaded { border-color: #198754; }
 
-        /* Estilos para alertas personalizadas */
         .alert-custom {
             display: flex;
             align-items: center;
@@ -56,8 +55,10 @@
     <div class="container py-4">
 
         <!-- Barra de Progreso -->
-        <div class="progress" style="height: 25px;">
-            <div id="progress-bar" class="progress-bar fw-bold" role="progressbar" style="width: 33%;" aria-valuenow="33" aria-valuemin="0" aria-valuemax="100">Paso 1 de 3</div>
+        <div class="progress-container">
+            <div class="progress" style="height: 25px;">
+                <div id="progress-bar" class="progress-bar fw-bold" role="progressbar" style="width: 33%;" aria-valuenow="33" aria-valuemin="0" aria-valuemax="100">Paso 1 de 3</div>
+            </div>
         </div>
 
         <!-- Paso 1: Verificación de Datos -->
@@ -71,22 +72,33 @@
                     <ul class="list-group list-group-flush mt-3">
                         <li class="list-group-item px-0"><strong>Nombre:</strong> {{ user.get('custom:Nombre', 'No disponible') }}</li>
                         <li class="list-group-item px-0"><strong>RUT:</strong> {{ user.get('custom:Rut', 'No disponible') }}</li>
-                        <li class="list-group-item px-0"><strong>Unidad Principal:</strong> {{ user.get('custom:TipoUnidad', '').split(',')[0] }} {{ user.get('custom:Unidad', '').split(',')[0] }}</li>
-                        <li class="list-group-item px-0">
-                            <strong>Unidades Pendientes de Votación:</strong>
-                            {% if pending_units %}
-                                <ul class="list-group mt-2">
-                                    {% for unit in pending_units %}
-                                        <li class="list-group-item list-group-item-warning rounded-pill text-center fw-bold my-1">
-                                            <i class="bi bi-hourglass-split"></i> {{ unit.tipo_unidad }} {{ unit.unidad }}
-                                        </li>
-                                    {% endfor %}
-                                </ul>
-                            {% else %}
-                                <div id="alert-no-units"></div>
-                            {% endif %}
-                        </li>
                     </ul>
+                    
+                    <h5 class="card-title mt-4">Unidades Asignadas</h5>
+                    {% set all_my_units = (pending_units + voted_units)|sort(attribute='unidad') %}
+                    {% if all_my_units %}
+                        <ul class="list-group list-group-flush mt-2">
+                            {% for unit in all_my_units %}
+                                <li class="list-group-item d-flex justify-content-between align-items-center px-1 py-3">
+                                    <strong class="fw-bold">{{ unit.tipo_unidad }} {{ unit.unidad }}</strong>
+                                    {% if unit in pending_units %}
+                                        <div class="d-flex align-items-center text-warning">
+                                            <i class="bi bi-hourglass-split me-2"></i>
+                                            <span class="fw-bold">Pendiente</span>
+                                        </div>
+                                    {% else %}
+                                        <div class="d-flex align-items-center text-success">
+                                            <i class="bi bi-check-circle-fill me-2"></i>
+                                            <span class="fw-bold">Registrado</span>
+                                        </div>
+                                    {% endif %}
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% endif %}
+                    
+                    <!-- Contenedor para la alerta de "votación completada" -->
+                    <div id="alert-no-units" class="mt-3"></div>
                 </div>
                 <div class="card-footer bg-white p-3">
                     <div class="d-flex justify-content-between align-items-center">

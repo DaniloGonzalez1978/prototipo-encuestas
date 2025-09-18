@@ -47,8 +47,6 @@ if not os.path.exists(UPLOAD_FOLDER):
 # --- Clientes de Servicios AWS ---
 dynamodb_client = boto3.client(
     'dynamodb',
-    aws_access_key_id=get_env_variable('AWS_ACCESS_KEY_ID'),
-    aws_secret_access_key=get_env_variable('AWS_SECRET_ACCESS_KEY'),
     region_name=get_env_variable('AWS_DEFAULT_REGION')
 )
 
@@ -136,7 +134,6 @@ def extract_rut_from_image(image_path):
     except Exception as e:
         logging.error(f"Error catastrófico durante el pipeline de OCR: {e}", exc_info=True)
         return None
-
 def save_and_get_url(file, user_sub):
     if not file or not file.filename:
         logging.warning("Llamada a save_and_get_url sin archivo.")
@@ -154,10 +151,9 @@ def save_and_get_url(file, user_sub):
     except Exception as e:
         logging.error(f"Error al guardar el archivo en '{path}': {e}", exc_info=True)
         return None, f"Error interno al intentar guardar el archivo."
-
 def get_pending_units(user_attributes):
     if not user_attributes or 'sub' not in user_attributes:
-        return [], [] # Devuelve (pendientes, totales)
+        return [], [], []
 
     cognito_units_str = user_attributes.get('custom:Unidad', '')
     cognito_types_str = user_attributes.get('custom:TipoUnidad', '')
@@ -165,16 +161,19 @@ def get_pending_units(user_attributes):
     unit_numbers = [u.strip() for u in cognito_units_str.split(',') if u.strip()]
     unit_types = [t.strip() for t in cognito_types_str.split(',') if t.strip()]
 
+    if len(unit_numbers) > 1 and len(unit_types) == 1:
+        unit_types = unit_types * len(unit_numbers)
+
     if len(unit_numbers) != len(unit_types):
-        print("Error: La cantidad de unidades y tipos de unidad no coincide.")
-        return [], []
+        logging.error(f"Discordancia irreparable en datos de Cognito para usuario {user_attributes.get('sub')}: Unidades: {len(unit_numbers)}, Tipos: {len(unit_types)}")
+        return [], [], []
 
     all_units_structured = [{'tipo_unidad': type, 'unidad': num} for type, num in zip(unit_types, unit_numbers)]
     
     if not all_units_structured:
-        return [], []
+        return [], [], []
 
-    voted_units = set()
+    voted_units_keys = set()
     try:
         paginator = dynamodb_client.get_paginator('query')
         pages = paginator.paginate(
@@ -186,41 +185,41 @@ def get_pending_units(user_attributes):
         for page in pages:
             for item in page.get('Items', []):
                 if 'unidad' in item and 'S' in item['unidad']:
-                    voted_units.add(item['unidad']['S'])
+                    voted_units_keys.add(item['unidad']['S'])
     except ClientError as e:
-        print(f"Error de DynamoDB al obtener unidades votadas: {e}")
-        return [], all_units_structured # En caso de error, es mejor asumir que no ha votado
+        logging.error(f"Error de DynamoDB al obtener unidades votadas: {e}")
+        return all_units_structured, [], all_units_structured
 
-    pending_structured = [u for u in all_units_structured if u['unidad'] not in voted_units]
+    pending_structured = [u for u in all_units_structured if u['unidad'] not in voted_units_keys]
     pending_structured.sort(key=lambda x: (x['tipo_unidad'], x['unidad']))
     
-    return pending_structured, all_units_structured
+    voted_structured = [u for u in all_units_structured if u['unidad'] in voted_units_keys]
+    voted_structured.sort(key=lambda x: (x['tipo_unidad'], x['unidad']))
+    
+    return pending_structured, voted_structured, all_units_structured
 
 # --- Rutas de Flask ---
 @app.route('/')
 def index():
     user = get_user_from_session()
     if not user:
-        return render_template('index.html', user=None, user_has_voted=False, has_no_units=False)
+        return render_template('index.html', user=None)
 
-    pending_units, all_units = get_pending_units(user)
+    pending_units, voted_units, all_units = get_pending_units(user)
 
-    # Caso 1: El usuario no tiene NINGUNA unidad asignada en Cognito.
     if not all_units:
-        return render_template('index.html', user=user, user_has_voted=False, has_no_units=True)
+        return render_template('index.html', user=user, has_no_units=True)
 
-    # Caso 2: El usuario tiene unidades, pero ya votó por todas.
     if not pending_units:
-        return render_template('index.html', user=user, user_has_voted=True, has_no_units=False)
+        return render_template('index.html', user=user, user_has_voted=True, voted_units=voted_units)
     
-    # Caso 3: El usuario tiene unidades pendientes, debe ir al formulario.
     else:
         return redirect(url_for('form'))
 
 @app.route('/login')
 def login():
     scopes = "openid+email+profile"
-    cognito_login_url = f"https://{COGNITO_DOMAIN}/login?client_id={CLIENT_ID}&response_type=code&scope={scopes}&redirect_uri={REDIRECT_URI}"
+    cognito_login_url = f"https://{COGNITO_DOMAIN}/login?client_id={CLIENT_ID}&response_type=code&scope={scopes}&redirect_uri={REDIRECT_URI}&ui_locales=es&lang=es"
     return redirect(cognito_login_url)
 
 @app.route('/callback')
@@ -276,17 +275,17 @@ def form():
     if not user:
         return redirect(url_for('login'))
 
-    pending_units, all_units = get_pending_units(user)
+    pending_units, voted_units, all_units = get_pending_units(user)
 
-    if not all_units: # Si no tiene unidades, no debería estar aquí
+    if not all_units: 
         flash("No tiene unidades asignadas para votar. Por favor, contacte al administrador.", "warning")
         return redirect(url_for('index'))
 
-    if not pending_units: # Si ya votó por todo, tampoco debería estar aquí
+    if not pending_units:
         flash("Ya has completado tu votación para todas tus unidades.", "info")
         return redirect(url_for('index'))
 
-    return render_template('form.html', user=user, pending_units=pending_units)
+    return render_template('form.html', user=user, pending_units=pending_units, voted_units=voted_units)
 
 @app.route('/validate_rut', methods=['POST'])
 def validate_rut():
@@ -348,7 +347,7 @@ def save_data():
     user = get_user_from_session()
     if not user: return jsonify({'error': 'No autorizado'}), 401
 
-    pending_units, _ = get_pending_units(user) # Solo necesitamos las pendientes aquí
+    pending_units, _, _ = get_pending_units(user) 
     if not pending_units:
         return jsonify({'success': True, 'message': 'Tu voto ya ha sido registrado para todas las unidades.'})
 
@@ -359,14 +358,17 @@ def save_data():
         for unit_data in pending_units:
             item = {
                 'cognito_sub': {'S': user.get('sub')},
-                'unidad': {'S': unit_data['unidad']},
-                'tipo_unidad': {'S': unit_data['tipo_unidad']},
-                'timestamp_votacion': {'S': datetime.utcnow().isoformat()},
+                'username': {'S': user.get('cognito:username', 'N/A')},
                 'nombre': {'S': user.get('custom:Nombre', 'N/A')},
                 'rut': {'S': user.get('custom:Rut', 'N/A')},
                 'email': {'S': user.get('email', 'N/A')},
+                
+                'unidad': {'S': unit_data['unidad']},
+                'tipo_unidad': {'S': unit_data['tipo_unidad']},
                 'comunidad': {'S': user.get('custom:Comunidad', 'N/A')},
-                'decision_reglamento': {'S': data.get('final_answer', 'N/A')},
+                'decision_reglamento': {'S': data.get('final_answer', 'N/A').title()},
+                'timestamp_votacion': {'S': datetime.utcnow().isoformat()},
+                
                 'rut_match_success': {'BOOL': validation_data.get('rut_match_success', False)},
                 'rut_detectado_imagen': {'S': validation_data.get('rut_detectado_imagen', 'N/A')},
                 'url_img_frontal': {'S': validation_data.get('url_img_frontal', 'N/A')},
@@ -383,7 +385,15 @@ def save_data():
         if transaction_items:
             dynamodb_client.transact_write_items(TransactItems=transaction_items)
         
-        return jsonify({'success': True, 'message': '¡Gracias por participar! Tu voto ha sido guardado con éxito.'})
+        voted_units_list = [f"- {unit['tipo_unidad']} {unit['unidad']}" for unit in pending_units]
+        voted_units_str = "\n".join(voted_units_list)
+        
+        success_message = (
+            "¡Gracias por participar! Tu voto ha sido guardado con éxito para las siguientes unidades:\n\n"
+            f"{voted_units_str}"
+        )
+        
+        return jsonify({'success': True, 'message': success_message})
 
     except ClientError as e:
         if 'TransactionCanceledException' in str(e):

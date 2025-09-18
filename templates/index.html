@@ -32,16 +32,35 @@
             <!-- Contenido para usuarios con sesión iniciada -->
             <h1 class="mb-3">¡Bienvenido(a) de nuevo, {{ user.get('custom:Nombre', 'Usuario') }}!</h1>
 
-            <!-- Lógica de votación estricta -->
-            {% if user_has_voted %}
+            <!-- Lógica de votación mejorada -->
+            {% if has_no_units %}
+                <div class="alert alert-warning" role="alert">
+                    <h4 class="alert-heading">No tienes unidades asignadas</h4>
+                    <p>Actualmente no tienes ninguna propiedad o unidad asociada a tu cuenta para poder votar.</p>
+                    <hr>
+                    <p class="mb-0">Si crees que esto es un error, por favor, contacta a la administración.</p>
+                </div>
+            {% elif user_has_voted %}
                 <div class="alert alert-success" role="alert">
                     <h4 class="alert-heading">¡Gracias por participar!</h4>
-                    <p>Ya has completado tu votación.</p>
+                    <p>Ya has completado tu votación para todas tus unidades.</p>
+                    {% if voted_units %}
+                        <hr>
+                        <p class="mb-2 font-weight-bold text-left">Votos registrados para:</p>
+                        <ul class="list-group text-left">
+                            {% for unit in voted_units %}
+                                <li class="list-group-item">
+                                    {{ unit.tipo_unidad }} {{ unit.unidad }}
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% endif %}
                 </div>
             {% else %}
                 <p class="lead mb-4">Tu participación es importante. Haz clic en el botón para registrar tu voto.</p>
                 <a href="{{ url_for('form') }}" class="btn btn-success btn-lg">Ir a Votar</a>
             {% endif %}
+            <!-- Fin de la lógica de votación -->
 
             <hr class="my-4">
             <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-secondary">Cerrar Sesión</a>

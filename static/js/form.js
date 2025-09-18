@@ -60,9 +60,9 @@ document.addEventListener('DOMContentLoaded', function() {
         const alertInfo = alertTypes[type] || alertTypes.info;
         
         placeholder.innerHTML = `
-            <div class="alert alert-${alertInfo.color} alert-custom d-flex align-items-center shadow-sm" role="alert">
-                <i class="bi ${alertInfo.icon} me-2"></i>
-                <div>${message}</div>
+            <div class="alert alert-${alertInfo.color} alert-custom d-flex align-items-start shadow-sm" role="alert">
+                <i class="bi ${alertInfo.icon} me-3 mt-1"></i>
+                <div style="white-space: pre-line;">${message}</div>
             </div>`;
     }
 
