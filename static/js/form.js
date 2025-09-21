@@ -80,14 +80,13 @@ document.addEventListener('DOMContentLoaded', function() {
         };
         reader.readAsDataURL(file);
 
-        // Limpiar el valor del input para permitir seleccionar el mismo archivo de nuevo
         event.target.value = '';
     }
 
     cropModalEl.addEventListener('shown.bs.modal', () => {
         if (cropper) cropper.destroy();
         cropper = new Cropper(imageToCrop, {
-            aspectRatio: 85.6 / 53.98, // Proporción de tarjeta de crédito/cédula
+            aspectRatio: 85.6 / 53.98,
             viewMode: 2,
             dragMode: 'move',
             background: false,
@@ -121,7 +120,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 preview.classList.add('loaded');
                 preview.onload = () => URL.revokeObjectURL(preview.src);
 
-                if (frontFile) validateRutBtn.disabled = false;
+                // --- ÚNICO CAMBIO REALIZADO ---
+                if (frontFile && backFile) validateRutBtn.disabled = false;
                 
                 cropModal.hide();
             }, 'image/jpeg', 0.9);
@@ -134,8 +134,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (validateRutBtn) {
         validateRutBtn.addEventListener('click', () => {
-            if (!frontFile) {
-                showAlert('validation-result', 'Debes subir y recortar la imagen frontal de tu carnet.', 'warning');
+            if (!frontFile || !backFile) { // Se mantiene la doble verificación por seguridad
+                showAlert('validation-result', 'Debes subir y recortar la imagen frontal y trasera de tu carnet.', 'warning');
                 return;
             }
 
@@ -146,7 +146,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const formData = new FormData();
             formData.append('id_frontal', frontFile);
-            if (backFile) formData.append('id_trasera', backFile);
+            formData.append('id_trasera', backFile);
 
             fetch('/validate_rut', { method: 'POST', body: formData })
             .then(response => response.ok ? response.json() : response.json().then(err => { throw new Error(err.error || `Error: ${response.statusText}`) }))
@@ -189,7 +189,6 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    // ¡CORRECCIÓN! Redirige a la página de inicio para mostrar el mensaje de agradecimiento.
                     window.location.href = '/';
                 } else {
                     showAlert('final-result', data.error || 'Ocurrió un error inesperado.', 'danger');

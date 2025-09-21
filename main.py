@@ -7,6 +7,7 @@ import requests
 import base64
 import logging
 import time
+import tempfile
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
 from dotenv import load_dotenv
 from datetime import datetime
@@ -38,17 +39,18 @@ app.secret_key = get_env_variable('SECRET_KEY')
 if not app.secret_key:
     raise ValueError("No se ha configurado la SECRET_KEY en las variables de entorno.")
 
-# --- Configuraciones ---
-UPLOAD_FOLDER = 'static/uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# --- Variables de AWS ---
+S3_BUCKET_NAME = get_env_variable('S3_BUCKET_NAME')
+AWS_REGION = get_env_variable('AWS_DEFAULT_REGION', 'us-east-1')
+SENDER_EMAIL = get_env_variable('SENDER_EMAIL')
+
+if not S3_BUCKET_NAME or not SENDER_EMAIL:
+    raise ValueError("Se deben configurar S3_BUCKET_NAME y SENDER_EMAIL en las variables de entorno.")
 
 # --- Clientes de Servicios AWS ---
-dynamodb_client = boto3.client(
-    'dynamodb',
-    region_name=get_env_variable('AWS_DEFAULT_REGION')
-)
+dynamodb_client = boto3.client('dynamodb', region_name=AWS_REGION)
+s3_client = boto3.client('s3', region_name=AWS_REGION)
+ses_client = boto3.client('ses', region_name=AWS_REGION)
 
 # --- Variables de Entorno Limpias ---
 CLIENT_ID = get_env_variable('COGNITO_CLIENT_ID')
@@ -77,269 +79,202 @@ def get_user_from_session():
     except Exception: return None
 
 def normalize_rut(rut):
-    if not rut:
-        return ""
+    if not rut: return ""
     return re.sub(r'[^0-9kK]', '', str(rut)).upper()
 
 def save_and_get_url(file, base_filename):
-    if not file or not file.filename:
-        return None, "No se proporcionó ningún archivo"
-
+    if not file or not file.filename: return None, "No se proporcionó ningún archivo"
     _, extension = os.path.splitext(file.filename)
-    timestamp = int(datetime.utcnow().timestamp())
-    filename = secure_filename(f"{base_filename}_{timestamp}{extension}")
-    path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    
+    filename = secure_filename(f"{base_filename}_{int(datetime.utcnow().timestamp())}{extension}")
+    s3_key = f"uploads/{filename}"
     try:
-        file.save(path)
-        url = url_for('static', filename=f'uploads/{filename}')
-        logging.info(f"Archivo guardado como '{filename}'. URL: {url}")
-        return url, path
-    except Exception as e:
-        logging.error(f"Error al guardar el archivo: {e}", exc_info=True)
-        return None, f"Error interno al guardar el archivo."
+        s3_client.upload_fileobj(file, S3_BUCKET_NAME, s3_key, ExtraArgs={'ContentType': file.content_type})
+        url = f"https://{S3_BUCKET_NAME}.s3.amazonaws.com/{s3_key}"
+        logging.info(f"Archivo subido a S3 como '{s3_key}'. URL: {url}")
+        return url, s3_key
+    except ClientError as e:
+        logging.error(f"Error al subir a S3: {e}", exc_info=True)
+        return None, "Error interno al guardar el archivo en S3."
 
 def _find_rut_from_text_block(text_block):
     rut_pattern = r'(\d{1,2}[., ]?\d{3}[., ]?\d{3}[- ]?[dkK\d])'
     matches = re.findall(rut_pattern, text_block)
     for potential_rut in matches:
         normalized = normalize_rut(potential_rut)
-        if 8 <= len(normalized) <= 9:
-            logging.info(f"RUT válido encontrado: '{normalized}' (de '{potential_rut}')")
-            return normalized
+        if 8 <= len(normalized) <= 9: return normalized
     return None
 
-def extract_rut_from_image(image_path):
+def extract_rut_from_image(s3_key):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        local_path = os.path.join(temp_dir, os.path.basename(s3_key))
+        try:
+            s3_client.download_file(S3_BUCKET_NAME, s3_key, local_path)
+            image = cv2.imread(local_path)
+            if image is None: return None
+            for angle in [0, 90, 180, 270]:
+                rotated = image if angle == 0 else cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE if angle == 90 else (cv2.ROTATE_180 if angle == 180 else cv2.ROTATE_90_COUNTERCLOCKWISE))
+                gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
+                resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+                _, processed = cv2.threshold(cv2.GaussianBlur(resized, (5, 5), 0), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                text = pytesseract.image_to_string(processed, lang='spa', config='--oem 3 --psm 3')
+                if (rut := _find_rut_from_text_block(text)): return rut
+            return None
+        except Exception as e:
+            logging.error(f"Error en pipeline de OCR: {e}", exc_info=True)
+            return None
+
+def send_vote_confirmation_email(user_info, vote_details):
+    recipient_email = user_info.get('email')
+    if not recipient_email: return
+    comunidad = user_info.get('custom:Comunidad', 'Comunidad')
+    nombre = user_info.get('custom:Nombre', 'vecino/a')
+    decision = vote_details['decision'].title()
+    unidades = ", ".join([u['unidad'] for u in vote_details['units']])
+    subject = f"Confirmación de tu Voto - {comunidad}"
+    body_html = f"""<html><body><h2>¡Gracias por tu participación, {nombre}!</h2>
+      <p>Hemos registrado tu voto para la comunidad <b>{comunidad}</b>.</p>
+      <p><b>Detalles:</b></p><ul><li><b>Unidades:</b> {unidades}</li><li><b>Decisión:</b> {decision}</li>
+        <li><b>Fecha/Hora:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</li></ul></body></html>"""
     try:
-        logging.info(f"Iniciando extracción de RUT desde: {image_path}")
-        original_image = cv2.imread(image_path)
-        if original_image is None: return None
+        ses_client.send_email(Source=SENDER_EMAIL, Destination={'ToAddresses': [recipient_email]},
+                              Message={'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+                                       'Body': {'Html': {'Data': body_html, 'Charset': 'UTF-8'}}})
+        logging.info(f"Correo de confirmación enviado a {recipient_email}")
+    except ClientError as e: logging.error(f"Error con SES: {e}", exc_info=True)
 
-        for angle in [0, 90, 180, 270]:
-            logging.info(f"--- Probando con rotación de {angle} grados ---")
-            if angle == 0: rotated_image = original_image
-            else: rotated_image = cv2.rotate(original_image, cv2.ROTATE_90_CLOCKWISE if angle == 90 else (cv2.ROTATE_180 if angle == 180 else cv2.ROTATE_90_COUNTERCLOCKWISE))
-
-            gray = cv2.cvtColor(rotated_image, cv2.COLOR_BGR2GRAY)
-            resized = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-            blurred = cv2.GaussianBlur(resized, (5, 5), 0)
-            _, processed_image = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            full_text = pytesseract.image_to_string(processed_image, lang='spa', config='--oem 3 --psm 3')
-            logging.info(f"Texto extraído (rotación {angle}°): \"{full_text[:250].replace('\n', ' ')}...\"")
-
-            anchor_pattern = r'(RUN)'
-            anchor_match = re.search(anchor_pattern, full_text, re.IGNORECASE)
-            if anchor_match:
-                logging.info("Ancla 'RUN' encontrada. Buscando RUT.")
-                start_index = anchor_match.end()
-                search_block = full_text[start_index : start_index + 80]
-                rut = _find_rut_from_text_block(search_block)
-                if rut:
-                    logging.info(f"¡ÉXITO! RUT encontrado con ancla en rotación {angle}°.")
-                    return rut
-            else:
-                logging.info(f"Ancla 'RUN' no encontrada en rotación {angle}°.")
-        
-        logging.warning("Ancla 'RUN' no fue detectada. Intentando sin ancla como último recurso.")
-        rut = _find_rut_from_text_block(full_text)
-        if rut: return rut
-
-        logging.error("No se encontró un RUT procesable en ninguna orientación.")
-        return None
-    except Exception as e:
-        logging.error(f"Error en pipeline de OCR: {e}", exc_info=True)
-        return None
-
-def get_pending_units(user_attributes, use_consistent_read=False):
-    if not user_attributes or 'sub' not in user_attributes:
-        return [], [], []
-    cognito_units_str = user_attributes.get('custom:Unidad', '')
-    cognito_types_str = user_attributes.get('custom:TipoUnidad', '')
-    unit_numbers = [u.strip() for u in cognito_units_str.split(',') if u.strip()]
-    unit_types = [t.strip() for t in cognito_types_str.split(',') if t.strip()]
-    if len(unit_numbers) > 1 and len(unit_types) == 1:
-        unit_types = unit_types * len(unit_numbers)
-    if len(unit_numbers) != len(unit_types):
-        logging.error(f"Discordancia en datos de Cognito para {user_attributes.get('sub')}")
-        return [], [], []
-    all_units_structured = [{'tipo_unidad': type, 'unidad': num} for type, num in zip(unit_types, unit_numbers)]
-    if not all_units_structured: return [], [], []
-
-    voted_units_keys = set()
+def get_pending_units(user_attrs, consistent_read=False):
+    if not user_attrs: return [], [], []
+    units = [u.strip() for u in user_attrs.get('custom:Unidad', '').split(',') if u.strip()]
+    types = [t.strip() for t in user_attrs.get('custom:TipoUnidad', '').split(',') if t.strip()]
+    if len(units) > 1 and len(types) == 1: types *= len(units)
+    all_units = [{'tipo_unidad': t, 'unidad': u} for t, u in zip(types, units)]
+    voted_keys = set()
     try:
         paginator = dynamodb_client.get_paginator('query')
-        query_args = {
-            'TableName': TABLE_NAME,
-            'KeyConditionExpression': 'cognito_sub = :sub',
-            'ExpressionAttributeValues': {":sub": {'S': user_attributes.get('sub')}},
-        }
-        if use_consistent_read: query_args['ConsistentRead'] = True
-        pages = paginator.paginate(**query_args)
-        for page in pages:
-            for item in page.get('Items', []):
-                if 'unidad' in item and 'S' in item['unidad']:
-                    voted_units_keys.add(item['unidad']['S'])
-    except ClientError as e:
-        logging.error(f"Error de DynamoDB: {e}")
-        return all_units_structured, [], all_units_structured
+        for page in paginator.paginate(TableName=TABLE_NAME, KeyConditionExpression='cognito_sub = :sub',
+                                     ExpressionAttributeValues={":sub": {'S': user_attrs.get('sub')}}, ConsistentRead=consistent_read):
+            voted_keys.update(item['unidad']['S'] for item in page.get('Items', []) if 'unidad' in item)
+    except ClientError as e: logging.error(f"Error de DynamoDB: {e}")
+    pending = sorted([u for u in all_units if u['unidad'] not in voted_keys], key=lambda x: x['unidad'])
+    voted = sorted([u for u in all_units if u['unidad'] in voted_keys], key=lambda x: x['unidad'])
+    return pending, voted, all_units
 
-    pending_structured = sorted([u for u in all_units_structured if u['unidad'] not in voted_units_keys], key=lambda x: (x['tipo_unidad'], x['unidad']))
-    voted_structured = sorted([u for u in all_units_structured if u['unidad'] in voted_units_keys], key=lambda x: (x['tipo_unidad'], x['unidad']))
-    return pending_structured, voted_structured, all_units_structured
-
-# --- Rutas de Flask ---
 @app.route('/')
 def index():
     user = get_user_from_session()
-    if not user:
-        return render_template('index.html', user=None)
-    voto_recien_emitido = session.pop('voto_recien_emitido', None)
-    if voto_recien_emitido is not None:
-        logging.info("Mostrando página de agradecimiento inmediata post-voto.")
-        return render_template('index.html', user=user, user_has_voted=True, voted_units=voto_recien_emitido)
-    pending_units, voted_units, all_units = get_pending_units(user, use_consistent_read=True)
+    if not user: return render_template('index.html', user=None)
+    if 'voto_recien_emitido' in session:
+        return render_template('index.html', user=user, user_has_voted=True, voted_units=session.pop('voto_recien_emitido'))
+    pending, voted, all_units = get_pending_units(user, consistent_read=True)
     if not all_units: return render_template('index.html', user=user, has_no_units=True)
-    if not pending_units: return render_template('index.html', user=user, user_has_voted=True, voted_units=voted_units)
+    if not pending: return render_template('index.html', user=user, user_has_voted=True, voted_units=voted)
     return redirect(url_for('form'))
 
 @app.route('/login')
 def login():
-    scopes = "openid+email+profile"
-    cognito_login_url = f"https://{COGNITO_DOMAIN}/login?client_id={CLIENT_ID}&response_type=code&scope={scopes}&redirect_uri={REDIRECT_URI}&ui_locales=es&lang=es"
-    return redirect(cognito_login_url)
+    return redirect(f"https://{COGNITO_DOMAIN}/login?client_id={CLIENT_ID}&response_type=code&scope=openid+email+profile&redirect_uri={REDIRECT_URI}&ui_locales=es")
 
 @app.route('/callback')
 def callback():
     code = request.args.get('code')
-    if not code:
-        error, error_desc = request.args.get('error'), request.args.get('error_description')
-        if error: flash(f"Error de Cognito: {error} - {error_desc}", "danger")
-        return redirect(url_for('index'))
-
-    token_url, auth_str = f"https://{COGNITO_DOMAIN}/oauth2/token", f"{CLIENT_ID}:{CLIENT_SECRET}"
-    auth_b64 = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
-    headers = {'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': f'Basic {auth_b64}'}
-    payload = {'grant_type': 'authorization_code', 'redirect_uri': REDIRECT_URI, 'code': code, 'client_id': CLIENT_ID}
-
+    if not code: return redirect(url_for('index'))
+    auth_b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode('utf-8')).decode('utf-8')
     try:
-        response = requests.post(token_url, headers=headers, data=payload)
-        response.raise_for_status()
-        tokens = response.json()
-        session['id_token'] = tokens['id_token']
-        session['access_token'] = tokens['access_token']
-
-        if 'timestamp_login' not in session:
-            session['timestamp_login'] = datetime.utcnow().isoformat()
-            session.modified = True
-
-    except requests.exceptions.RequestException as e:
-        error_details = e.response.text if e.response is not None else ""
-        flash(f"Error de comunicación con el servicio de autenticación. Detalles: {error_details}", "danger")
-        
+        res = requests.post(f"https://{COGNITO_DOMAIN}/oauth2/token", headers={'Authorization': f'Basic {auth_b64}', 'Content-Type': 'application/x-www-form-urlencoded'}, data={'grant_type': 'authorization_code', 'redirect_uri': REDIRECT_URI, 'code': code})
+        res.raise_for_status()
+        tokens = res.json()
+        session.update(id_token=tokens['id_token'], access_token=tokens['access_token'], timestamp_login=datetime.utcnow().isoformat())
+    except requests.RequestException as e: logging.error(f"Error con Cognito: {e}", exc_info=True)
     return redirect(url_for('index'))
 
 @app.route('/logout')
 def logout():
     session.clear()
-    logout_uri = url_for('callback', _external=True)
-    cognito_logout_url = f"https://{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri={logout_uri}"
-    return redirect(cognito_logout_url)
+    return redirect(f"https://{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri={url_for('callback', _external=True)}")
 
 @app.route('/form')
 def form():
     user = get_user_from_session()
     if not user: return redirect(url_for('login'))
-    pending_units, voted_units, all_units = get_pending_units(user, use_consistent_read=True)
-    if not all_units: 
-        flash("No tiene unidades asignadas para votar.", "warning")
-        return redirect(url_for('index'))
-    if not pending_units:
-        flash("Ya has completado tu votación para todas tus unidades.", "info")
-        return redirect(url_for('index'))
-    return render_template('form.html', user=user, pending_units=pending_units, voted_units=voted_units)
+    pending, voted, _ = get_pending_units(user, consistent_read=True)
+    if not pending: return redirect(url_for('index'))
+    return render_template('form.html', user=user, pending_units=pending, voted_units=voted)
 
+# --- RUTA CORREGIDA ---    
 @app.route('/validate_rut', methods=['POST'])
 def validate_rut():
+    user = get_user_from_session()
+    # 1. AMBAS IMÁGENES SON OBLIGATORIAS
+    if not user or 'id_frontal' not in request.files or 'id_trasera' not in request.files:
+        return jsonify({'error': 'No autorizado o faltan imágenes (frontal o trasera).'}), 400
+    
     start_time = time.time()
-    try:
-        user = get_user_from_session()
-        if not user: return jsonify({'error': 'No autorizado'}), 401
-        if 'id_frontal' not in request.files: return jsonify({'error': 'Falta la imagen frontal.'}), 400
+    user_rut_norm = normalize_rut(user.get('custom:Rut'))
+    rut_filename = re.sub(r'[^0-9]', '', user_rut_norm)
 
-        user_rut_cognito = normalize_rut(user.get('custom:Rut'))
-        rut_for_filename = re.sub(r'[^0-9]', '', user_rut_cognito)
+    # Subir imagen frontal
+    url_frontal, s3_key_frontal = save_and_get_url(request.files['id_frontal'], f"{rut_filename}_frontal")
+    if not url_frontal: return jsonify({'error': s3_key_frontal}), 500
 
-        img_frontal_file = request.files['id_frontal']
-        base_filename_frontal = f"{rut_for_filename}_frontal"
-        url_frontal, path_frontal = save_and_get_url(img_frontal_file, base_filename_frontal)
-        if not url_frontal: return jsonify({'error': path_frontal}), 500
+    # Subir imagen trasera
+    url_trasera, _ = save_and_get_url(request.files['id_trasera'], f"{rut_filename}_trasera")
+    if not url_trasera: return jsonify({'error': 'Error al guardar la imagen trasera.'}), 500
 
-        url_trasera = 'N/A'
-        if 'id_trasera' in request.files and request.files['id_trasera'].filename != '':
-            img_trasera_file = request.files['id_trasera']
-            base_filename_trasera = f"{rut_for_filename}_trasera"
-            url_trasera, _ = save_and_get_url(img_trasera_file, base_filename_trasera)
-        
-        extracted_rut = extract_rut_from_image(path_frontal)
-        rut_match_success = bool(extracted_rut and extracted_rut == user_rut_cognito)
-        logging.info(f"Comparación de RUT: {rut_match_success} (Extraído: {extracted_rut}, Cognito: {user_rut_cognito})")
+    # Extraer RUT y comparar
+    extracted_rut = extract_rut_from_image(s3_key_frontal)
+    rut_match = bool(extracted_rut and extracted_rut == user_rut_norm)
+    
+    # Guardar estadísticas de validación en sesión
+    rut_stats = session.get('rut_validation_stats', {})
+    rut_stats['cantidad_intentos_rut'] = rut_stats.get('cantidad_intentos_rut', 0) + 1
+    rut_stats['timestamp_validacion'] = datetime.utcnow().isoformat()
+    rut_stats['tiempo_deteccion_rut'] = time.time() - start_time
+    session['rut_validation_stats'] = rut_stats
 
-        elapsed_time = time.time() - start_time
-        rut_stats = session.get('rut_validation_stats', {})
-        
-        if 'timestamp_validacion' not in rut_stats:
-            rut_stats['timestamp_validacion'] = datetime.utcnow().isoformat()
-        
-        rut_stats['cantidad_intentos_rut'] = rut_stats.get('cantidad_intentos_rut', 0) + 1
-        rut_stats['tiempo_deteccion_rut'] = elapsed_time
-        session['rut_validation_stats'] = rut_stats
+    # Guardar datos de validación en sesión
+    session['validation_data'] = {
+        'rut_match_success': rut_match,
+        'rut_detectado_imagen': extracted_rut or 'No detectado',
+        'url_img_frontal': url_frontal,
+        'url_img_trasera': url_trasera
+    }
+    session.modified = True
 
-        session['validation_data'] = {
-            'rut_match_success': rut_match_success,
-            'rut_detectado_imagen': extracted_rut or 'No detectado',
-            'url_img_frontal': url_frontal,
-            'url_img_trasera': url_trasera or 'N/A'
-        }
-        session.modified = True
-        
-        return jsonify({'success': True, 'rut_match': rut_match_success, 'extracted_rut': extracted_rut or 'No se pudo extraer', 'user_rut': user_rut_cognito})
-    except Exception as e:
-        logging.error(f"Error en /validate_rut: {e}", exc_info=True)
-        return jsonify({'error': 'Error inesperado en el servidor.'}), 500
+    # 2. RESPUESTA JSON CORREGIDA PARA EL FRONTEND
+    return jsonify({
+        'success': True, 
+        'rut_match': rut_match,
+        'extracted_rut': extracted_rut or 'No detectado',
+        'user_rut': user_rut_norm
+    })
+
 
 @app.route('/save_data', methods=['POST'])
 def save_data():
     user = get_user_from_session()
     if not user: return jsonify({'error': 'No autorizado'}), 401
-    pending_units, _, _ = get_pending_units(user, use_consistent_read=True)
-    if not pending_units: return jsonify({'success': True, 'message': 'Tu voto ya fue registrado.'})
+    
+    pending, _, _ = get_pending_units(user, consistent_read=True)
+    if not pending: return jsonify({'success': True, 'message': 'Voto ya registrado.'})
 
     data = request.json
     validation_data = session.pop('validation_data', {})
-    timestamp_login = session.pop('timestamp_login', 'N/A')
     rut_stats = session.pop('rut_validation_stats', {})
-
-    # --- Captura y Procesamiento de Datos de Identificación ---
-    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
-    accept_language = request.headers.get('Accept-Language', 'N/A')
-    sec_ch_ua = request.headers.get('Sec-CH-UA', 'N/A')
-    sec_ch_ua_mobile = request.headers.get('Sec-CH-UA-Mobile', 'N/A')
+    
+    sec_ch_ua_mobile = request.headers.get('Sec-CH-UA-Mobile', '')
     device_type = "Mobile" if sec_ch_ua_mobile == "?1" else "Desktop"
-    sec_ch_ua_platform = request.headers.get('Sec-CH-UA-Platform', 'N/A')
-    sec_ch_ua_arch = request.headers.get('Sec-CH-UA-Arch', 'N/A')
-    sec_ch_ua_model = request.headers.get('Sec-CH-UA-Model', 'N/A')
 
     try:
-        transaction_items = []
-        for unit_data in pending_units:
+        items = []
+        for unit in pending:
             item = {
                 'cognito_sub': {'S': user.get('sub')},
                 'username': {'S': user.get('cognito:username', 'N/A')},
                 'nombre': {'S': user.get('custom:Nombre', 'N/A')},
                 'rut': {'S': user.get('custom:Rut', 'N/A')},
                 'email': {'S': user.get('email', 'N/A')},
-                'unidad': {'S': unit_data['unidad']},
-                'tipo_unidad': {'S': unit_data['tipo_unidad']},
+                'unidad': {'S': unit['unidad']},
+                'tipo_unidad': {'S': unit['tipo_unidad']},
                 'comunidad': {'S': user.get('custom:Comunidad', 'N/A')},
                 'decision_reglamento': {'S': data.get('final_answer', 'N/A').title()},
                 'timestamp_votacion': {'S': datetime.utcnow().isoformat()},
@@ -347,46 +282,39 @@ def save_data():
                 'rut_detectado_imagen': {'S': validation_data.get('rut_detectado_imagen', 'N/A')},
                 'url_img_frontal': {'S': validation_data.get('url_img_frontal', 'N/A')},
                 'url_img_trasera': {'S': validation_data.get('url_img_trasera', 'N/A')},
-                
-                'user_agent': {'S': request.user_agent.string},
-                'ip_address': {'S': ip_address},
-                'accept_language': {'S': accept_language},
-                'device_type': {'S': device_type},
-                'sec_ch_ua': {'S': sec_ch_ua},
-                'sec_ch_ua_platform': {'S': sec_ch_ua_platform},
-                'sec_ch_ua_arch': {'S': sec_ch_ua_arch},
-                'sec_ch_ua_model': {'S': sec_ch_ua_model},
-
-                'timestamp_login': {'S': timestamp_login},
+                'timestamp_login': {'S': session.get('timestamp_login', 'N/A')},
                 'timestamp_validacion': {'S': rut_stats.get('timestamp_validacion', 'N/A')},
                 'cantidad_intentos_rut': {'N': str(rut_stats.get('cantidad_intentos_rut', 1))},
-                'tiempo_deteccion_rut': {'N': str(rut_stats.get('tiempo_deteccion_rut', 0))}
+                'tiempo_deteccion_rut': {'N': str(round(rut_stats.get('tiempo_deteccion_rut', 0), 2))},
+                'ip_address': {'S': request.headers.get('X-Forwarded-For', request.remote_addr)},
+                'user_agent': {'S': request.user_agent.string},
+                'accept_language': {'S': request.headers.get('Accept-Language', 'N/A')},
+                'device_type': {'S': device_type},
+                'sec_ch_ua': {'S': request.headers.get('Sec-CH-UA', 'N/A')},
+                'sec_ch_ua_arch': {'S': request.headers.get('Sec-CH-UA-Arch', 'N/A')},
+                'sec_ch_ua_model': {'S': request.headers.get('Sec-CH-UA-Model', 'N/A')},
+                'sec_ch_ua_platform': {'S': request.headers.get('Sec-CH-UA-Platform', 'N/A')}
             }
-            transaction_items.append({
-                'Put': {
-                    'TableName': TABLE_NAME,
-                    'Item': item,
-                    'ConditionExpression': 'attribute_not_exists(cognito_sub) AND attribute_not_exists(unidad)'
-                }
-            })
+            items.append({'Put': {'TableName': TABLE_NAME, 'Item': item, 'ConditionExpression': 'attribute_not_exists(cognito_sub) AND attribute_not_exists(unidad)'}})
 
-        if transaction_items: dynamodb_client.transact_write_items(TransactItems=transaction_items)
-        session['voto_recien_emitido'] = pending_units
-        session.modified = True
-        return jsonify({'success': True, 'message': "¡Tu voto ha sido guardado con éxito!"})
+        if items:
+            dynamodb_client.transact_write_items(TransactItems=items)
+            send_vote_confirmation_email(user, {'decision': data.get('final_answer', 'N/A'), 'units': pending})
+
+        session['voto_recien_emitido'] = pending
+        return jsonify({'success': True, 'message': '¡Voto guardado con éxito!'})
 
     except ClientError as e:
         if 'TransactionCanceledException' in str(e):
-            _, voted_units, _ = get_pending_units(user, use_consistent_read=True)
-            session['voto_recien_emitido'] = voted_units
-            session.modified = True
+            _, voted, _ = get_pending_units(user, consistent_read=True)
+            session['voto_recien_emitido'] = voted
             return jsonify({'success': True, 'message': 'Tu voto ya ha sido registrado.'})
-        else:
-            logging.error(f"Error de AWS al guardar: {e}", exc_info=True)
-            return jsonify({'error': f'Error de base de datos: {e.response["Error"]["Message"]}'}), 500
+        logging.error(f"Error de AWS: {e}", exc_info=True)
+        return jsonify({'error': 'Error de base de datos.'}), 500
     except Exception as e:
-        logging.error(f"Error inesperado al guardar: {e}", exc_info=True)
-        return jsonify({'error': f'Ha ocurrido un error inesperado: {str(e)}'}), 500
+        logging.error(f"Error inesperado: {e}", exc_info=True)
+        return jsonify({'error': 'Error inesperado.'}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
