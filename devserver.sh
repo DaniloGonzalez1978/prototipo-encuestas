@@ -1,18 +1,13 @@
 #!/bin/bash
+# Este script inicia la aplicación Flask usando el servidor de producción Gunicorn.
 
-set -e
-
-echo "Activating virtual environment..."
+echo "Activando entorno virtual..."
 source .venv/bin/activate
 
-# Load environment variables from .env file
-if [ -f .env ]; then
-    echo "Loading environment variables from .env..."
-    source .env
-fi
+# Define el puerto 5000 por defecto si la variable de entorno PORT no está establecida.
+PORT=${PORT:-5000}
+echo "Usando el puerto: $PORT"
 
-export FLASK_APP=main.py
-export PORT=5000
-
-echo "Starting Flask development server..."
-flask run --host 0.0.0.0 --port $PORT
+echo "Iniciando Gunicorn..."
+# El punto de entrada es 'main:app' (el objeto 'app' dentro del archivo 'main.py').
+gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 300 main:app

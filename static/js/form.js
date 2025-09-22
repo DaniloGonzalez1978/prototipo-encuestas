@@ -154,10 +154,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 loader.style.display = 'none';
                 if (data.success) {
                     if (data.rut_match) {
-                        showAlert('validation-result', `✅ ¡Validación exitosa! El RUT de la imagen (${data.extracted_rut}) coincide.`, 'success');
+                        showAlert('validation-result', `✅ ¡Validación exitosa! El RUT de la imagen (${data.extracted_rut}) coincide con tu registro.`, 'success');
                         nextStep2Btn.disabled = false;
                     } else {
-                        showAlert('validation-result', `⚠️ El RUT de la imagen (${data.extracted_rut}) no coincide con tu registro (${data.user_rut}). Por favor, intenta con una nueva foto.`, 'warning');
+                        showAlert('validation-result', `⚠️ El RUT de la imagen (${data.extracted_rut}) no coincide con tu registro (${data.user_rut}). Por favor, intenta con una nueva  o ajusta el recorte de la imagen.`, 'warning');
                         validateRutBtn.disabled = false;
                     }
                 } else {
