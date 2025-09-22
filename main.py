@@ -1,65 +1,47 @@
 
+# --- Librerías Estándar y Externas ---
 import os
 import re
-import boto3
-import json
-import requests
 import base64
 import logging
 import time
 import tempfile
+import json
+import requests
+import boto3
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
-from dotenv import load_dotenv
-from datetime import datetime
 from werkzeug.utils import secure_filename
 from botocore.exceptions import ClientError
+from datetime import datetime
 
 # --- Librerías de Procesamiento de Imagen ---
 import cv2
 import pytesseract
 import numpy as np
 
+# --- [NUEVO] Importación Centralizada de Configuración ---
+from config import (
+    SECRET_KEY, S3_BUCKET_NAME, AWS_DEFAULT_REGION,
+    COGNITO_USER_POOL_ID, APP_URL, SES_FROM_EMAIL_ADDRESS,
+    COGNITO_CLIENT_ID, COGNITO_CLIENT_SECRET, COGNITO_DOMAIN, 
+    COGNITO_REDIRECT_URI, DYNAMODB_TABLE_NAME
+)
+
 # --- Configuración del Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-load_dotenv()
-
+# --- Inicialización de la Aplicación Flask ---
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.jinja_env.add_extension('jinja2.ext.do')
-
-# --- Función para obtener y limpiar variables de entorno ---
-def get_env_variable(var_name, default=None):
-    value = os.getenv(var_name, default)
-    if isinstance(value, str):
-        return value.strip()
-    return value
-
-# --- Clave Secreta ---
-app.secret_key = get_env_variable('SECRET_KEY')
-if not app.secret_key:
-    raise ValueError("No se ha configurado la SECRET_KEY en las variables de entorno.")
-
-# --- Variables de AWS ---
-S3_BUCKET_NAME = get_env_variable('S3_BUCKET_NAME')
-AWS_REGION = get_env_variable('AWS_DEFAULT_REGION', 'us-east-1')
-SENDER_EMAIL = get_env_variable('SENDER_EMAIL')
-
-if not S3_BUCKET_NAME or not SENDER_EMAIL:
-    raise ValueError("Se deben configurar S3_BUCKET_NAME y SENDER_EMAIL en las variables de entorno.")
+app.secret_key = SECRET_KEY
 
 # --- Clientes de Servicios AWS ---
-dynamodb_client = boto3.client('dynamodb', region_name=AWS_REGION)
-s3_client = boto3.client('s3', region_name=AWS_REGION)
-ses_client = boto3.client('ses', region_name=AWS_REGION)
+# Usan la región cargada desde la configuración central.
+dynamodb_client = boto3.client('dynamodb', region_name=AWS_DEFAULT_REGION)
+s3_client = boto3.client('s3', region_name=AWS_DEFAULT_REGION)
+ses_client = boto3.client('ses', region_name=AWS_DEFAULT_REGION)
 
-# --- Variables de Entorno Limpias ---
-CLIENT_ID = get_env_variable('COGNITO_CLIENT_ID')
-CLIENT_SECRET = get_env_variable('COGNITO_CLIENT_SECRET')
-COGNITO_DOMAIN = get_env_variable('COGNITO_DOMAIN')
-REDIRECT_URI = get_env_variable('COGNITO_REDIRECT_URI')
-TABLE_NAME = get_env_variable('DYNAMODB_TABLE_NAME', 'user_participations')
-
-# --- MIDDLEWARE ---
+# --- MIDDLEWARE (Sin cambios) ---
 @app.after_request
 def add_headers(response):
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0, max-age=0'
@@ -68,7 +50,7 @@ def add_headers(response):
     response.headers['Accept-CH'] = 'Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Arch, Sec-CH-UA-Model'
     return response
 
-# --- Funciones de Utilidad y Lógica de Negocio ---
+# --- Funciones de Utilidad y Lógica de Negocio (Sin cambios) ---
 def get_user_from_session():
     id_token = session.get('id_token')
     if not id_token: return None
@@ -136,7 +118,7 @@ def send_vote_confirmation_email(user_info, vote_details):
       <p><b>Detalles:</b></p><ul><li><b>Unidades:</b> {unidades}</li><li><b>Decisión:</b> {decision}</li>
         <li><b>Fecha/Hora:</b> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</li></ul></body></html>"""
     try:
-        ses_client.send_email(Source=SENDER_EMAIL, Destination={'ToAddresses': [recipient_email]},
+        ses_client.send_email(Source=SES_FROM_EMAIL_ADDRESS, Destination={'ToAddresses': [recipient_email]},
                               Message={'Subject': {'Data': subject, 'Charset': 'UTF-8'},
                                        'Body': {'Html': {'Data': body_html, 'Charset': 'UTF-8'}}})
         logging.info(f"Correo de confirmación enviado a {recipient_email}")
@@ -151,13 +133,16 @@ def get_pending_units(user_attrs, consistent_read=False):
     voted_keys = set()
     try:
         paginator = dynamodb_client.get_paginator('query')
-        for page in paginator.paginate(TableName=TABLE_NAME, KeyConditionExpression='cognito_sub = :sub',
+        for page in paginator.paginate(TableName=DYNAMODB_TABLE_NAME, KeyConditionExpression='cognito_sub = :sub',
                                      ExpressionAttributeValues={":sub": {'S': user_attrs.get('sub')}}, ConsistentRead=consistent_read):
             voted_keys.update(item['unidad']['S'] for item in page.get('Items', []) if 'unidad' in item)
     except ClientError as e: logging.error(f"Error de DynamoDB: {e}")
     pending = sorted([u for u in all_units if u['unidad'] not in voted_keys], key=lambda x: x['unidad'])
     voted = sorted([u for u in all_units if u['unidad'] in voted_keys], key=lambda x: x['unidad'])
     return pending, voted, all_units
+
+
+# --- RUTAS DE LA APLICACIÓN ---
 
 @app.route('/')
 def index():
@@ -172,15 +157,15 @@ def index():
 
 @app.route('/login')
 def login():
-    return redirect(f"https://{COGNITO_DOMAIN}/login?client_id={CLIENT_ID}&response_type=code&scope=openid+email+profile&redirect_uri={REDIRECT_URI}&ui_locales=es")
+    return redirect(f"https://{COGNITO_DOMAIN}/login?client_id={COGNITO_CLIENT_ID}&response_type=code&scope=openid+email+profile&redirect_uri={COGNITO_REDIRECT_URI}&ui_locales=es")
 
 @app.route('/callback')
 def callback():
     code = request.args.get('code')
     if not code: return redirect(url_for('index'))
-    auth_b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode('utf-8')).decode('utf-8')
+    auth_b64 = base64.b64encode(f"{COGNITO_CLIENT_ID}:{COGNITO_CLIENT_SECRET}".encode('utf-8')).decode('utf-8')
     try:
-        res = requests.post(f"https://{COGNITO_DOMAIN}/oauth2/token", headers={'Authorization': f'Basic {auth_b64}', 'Content-Type': 'application/x-www-form-urlencoded'}, data={'grant_type': 'authorization_code', 'redirect_uri': REDIRECT_URI, 'code': code})
+        res = requests.post(f"https://{COGNITO_DOMAIN}/oauth2/token", headers={'Authorization': f'Basic {auth_b64}', 'Content-Type': 'application/x-www-form-urlencoded'}, data={'grant_type': 'authorization_code', 'redirect_uri': COGNITO_REDIRECT_URI, 'code': code})
         res.raise_for_status()
         tokens = res.json()
         session.update(id_token=tokens['id_token'], access_token=tokens['access_token'], timestamp_login=datetime.utcnow().isoformat())
@@ -190,7 +175,9 @@ def callback():
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect(f"https://{COGNITO_DOMAIN}/logout?client_id={CLIENT_ID}&logout_uri={url_for('callback', _external=True)}")
+    # El `_external=True` es crucial para la redirección post-logout
+    logout_redirect = url_for('index', _external=True)
+    return redirect(f"https://{COGNITO_DOMAIN}/logout?client_id={COGNITO_CLIENT_ID}&logout_uri={logout_redirect}")
 
 @app.route('/form')
 def form():
@@ -200,11 +187,9 @@ def form():
     if not pending: return redirect(url_for('index'))
     return render_template('form.html', user=user, pending_units=pending, voted_units=voted)
 
-# --- RUTA CORREGIDA ---    
 @app.route('/validate_rut', methods=['POST'])
 def validate_rut():
     user = get_user_from_session()
-    # 1. AMBAS IMÁGENES SON OBLIGATORIAS
     if not user or 'id_frontal' not in request.files or 'id_trasera' not in request.files:
         return jsonify({'error': 'No autorizado o faltan imágenes (frontal o trasera).'}), 400
     
@@ -212,26 +197,21 @@ def validate_rut():
     user_rut_norm = normalize_rut(user.get('custom:Rut'))
     rut_filename = re.sub(r'[^0-9]', '', user_rut_norm)
 
-    # Subir imagen frontal
     url_frontal, s3_key_frontal = save_and_get_url(request.files['id_frontal'], f"{rut_filename}_frontal")
     if not url_frontal: return jsonify({'error': s3_key_frontal}), 500
 
-    # Subir imagen trasera
     url_trasera, _ = save_and_get_url(request.files['id_trasera'], f"{rut_filename}_trasera")
     if not url_trasera: return jsonify({'error': 'Error al guardar la imagen trasera.'}), 500
 
-    # Extraer RUT y comparar
     extracted_rut = extract_rut_from_image(s3_key_frontal)
     rut_match = bool(extracted_rut and extracted_rut == user_rut_norm)
     
-    # Guardar estadísticas de validación en sesión
     rut_stats = session.get('rut_validation_stats', {})
     rut_stats['cantidad_intentos_rut'] = rut_stats.get('cantidad_intentos_rut', 0) + 1
     rut_stats['timestamp_validacion'] = datetime.utcnow().isoformat()
     rut_stats['tiempo_deteccion_rut'] = time.time() - start_time
     session['rut_validation_stats'] = rut_stats
 
-    # Guardar datos de validación en sesión
     session['validation_data'] = {
         'rut_match_success': rut_match,
         'rut_detectado_imagen': extracted_rut or 'No detectado',
@@ -240,7 +220,6 @@ def validate_rut():
     }
     session.modified = True
 
-    # 2. RESPUESTA JSON CORREGIDA PARA EL FRONTEND
     return jsonify({
         'success': True, 
         'rut_match': rut_match,
@@ -295,7 +274,7 @@ def save_data():
                 'sec_ch_ua_model': {'S': request.headers.get('Sec-CH-UA-Model', 'N/A')},
                 'sec_ch_ua_platform': {'S': request.headers.get('Sec-CH-UA-Platform', 'N/A')}
             }
-            items.append({'Put': {'TableName': TABLE_NAME, 'Item': item, 'ConditionExpression': 'attribute_not_exists(cognito_sub) AND attribute_not_exists(unidad)'}})
+            items.append({'Put': {'TableName': DYNAMODB_TABLE_NAME, 'Item': item, 'ConditionExpression': 'attribute_not_exists(cognito_sub) AND attribute_not_exists(unidad)'}})
 
         if items:
             dynamodb_client.transact_write_items(TransactItems=items)
@@ -315,6 +294,9 @@ def save_data():
         logging.error(f"Error inesperado: {e}", exc_info=True)
         return jsonify({'error': 'Error inesperado.'}), 500
 
+
+# --- Punto de Entrada de la Aplicación ---
 if __name__ == '__main__':
+    # Gunicorn usará el objeto 'app'. Esta sección es para desarrollo local.
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)

@@ -1,0 +1,22 @@
+# Entornos virtuales
+.venv/
+env/
+
+# Archivos de caché de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de configuración locales y de desarrollo
+.env
+.dev.nix
+devserver.sh
+
+# Metadatos de Git y Docker
+.git
+.gitignore
+.dockerignore
+
+# Documentación y otros archivos no necesarios en producción
+README.md

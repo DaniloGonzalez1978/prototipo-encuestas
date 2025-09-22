@@ -1,0 +1,17 @@
+# Versión de la especificación de App Runner.
+version: 1.0
+
+# --- Fase de Construcción ---
+# App Runner buscará y usará automáticamente el archivo 'Dockerfile' en la raíz
+# de tu repositorio para construir la imagen del contenedor.
+build:
+  # No se necesitan argumentos adicionales aquí, App Runner se encarga.
+
+# --- Fase de Ejecución ---
+run:
+  # El puerto que tu aplicación expone dentro del contenedor.
+  # Debe coincidir con el puerto que Gunicorn está usando en tu Dockerfile.
+  port: 8080
+
+  # El comando para iniciar tu aplicación se toma automáticamente de la
+  # instrucción CMD en tu Dockerfile. No necesitas especificarlo aquí.
