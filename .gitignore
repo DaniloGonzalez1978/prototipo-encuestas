@@ -1,11 +1,61 @@
-# Archivos y carpetas generados por el sistema
-*.xlsx
-
-# Directorio de subidas de archivos de prueba
-static/uploads/
-
-# Archivos de entorno y secretos
-/.env
-
-# Carpetas de caché de Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.pyc
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+develop-eggs/
+eggs/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+_build/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+.hypothesis/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Instance Folder (Flask)
+/instance
+
+# Databases
+*.sqlite
+*.sqlite3
+
+# Generated files
+*.xlsx
+*.csv
+
+# Logs
+*.log
